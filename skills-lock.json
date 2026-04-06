@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "skills": {
+    "brainstorming": {
+      "source": "obra/superpowers",
+      "sourceType": "github",
+      "computedHash": "f483c304fcde060211ffae00f49bb728536e7e7613c99db45b5b924d9fc17243"
+    },
+    "go": {
+      "source": "grafana/loki",
+      "sourceType": "github",
+      "computedHash": "b3c429ff2c099d10d7781be6ab151c59223fab8c57a37957e05dece04d5ffad3"
+    },
+    "go-concurrency-patterns": {
+      "source": "wshobson/agents",
+      "sourceType": "github",
+      "computedHash": "c5d64f600ef4ea2636e8a4452ad90d2ad2726bd9bb3b9c370c7b6397b5f974aa"
+    },
+    "go-context": {
+      "source": "cxuu/golang-skills",
+      "sourceType": "github",
+      "computedHash": "8cfb48740871ebc05035f1961d9eb52a8fefd285fbae53b977df12b8c4d7ca8b"
+    },
+    "verification-before-completion": {
+      "source": "obra/superpowers",
+      "sourceType": "github",
+      "computedHash": "9b446f0c7fe1cfb560b1d34439523b1a76d5f177290007b2c053a1c749a4a8ba"
+    }
+  }
+}
