@@ -1,0 +1,76 @@
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+formatters:
+  # 仅启用 gci。gofumpt 由 Makefile 中独立的 gofumpt CLI 强制执行，
+  # 因为 golangci-lint v2.1.6 bundled 的 gofumpt 与三段式 gci 的输出存在
+  # 幂等冲突（误报 "File is not properly formatted"）。
+  enable:
+    - gci
+  settings:
+    gci:
+      sections:
+        - standard
+        - default
+        - prefix(flyingEirc/Rclaude)
+
+linters:
+  default: none
+  enable:
+    # 错误处理
+    - errcheck
+    - errorlint
+    # 代码质量
+    - govet
+    - staticcheck
+    - unused
+    - ineffassign
+    - wastedassign
+    # 风格
+    - godot
+    - misspell
+    - whitespace
+    # 安全
+    - gosec
+    # 性能
+    - prealloc
+    # 复杂度
+    - gocognit
+    - cyclop
+
+  settings:
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment  # 按需开启
+
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+
+    errorlint:
+      errorf: true
+      asserts: true
+      comparison: true
+
+    gosec:
+      excludes:
+        - G115  # 整型转换误报较多
+
+    gocognit:
+      min-complexity: 15
+
+    cyclop:
+      max-complexity: 10
+
+issues:
+  max-issues-per-linter: 50
+  max-same-issues: 5
+  exclude-rules:
+    - path: "_test\\.go"
+      linters:
+        - gosec
+        - errcheck

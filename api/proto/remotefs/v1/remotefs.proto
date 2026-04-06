@@ -1,0 +1,136 @@
+syntax = "proto3";
+
+package remotefs.v1;
+
+option go_package = "flyingEirc/Rclaude/api/proto/remotefs/v1;remotefsv1";
+
+// ============ 数据结构 ============
+
+// FileInfo 描述工作区中的一个文件或目录元数据。
+// path 字段统一使用 forward slash 相对路径，不包含 leading slash。
+message FileInfo {
+  string path = 1;
+  int64 size = 2;
+  int64 mod_time = 3;   // Unix timestamp (seconds since epoch)
+  bool is_dir = 4;
+  uint32 mode = 5;      // POSIX 文件权限位
+}
+
+// FileTree 是 FileInfo 的集合，可承载完整或部分目录树。
+message FileTree {
+  repeated FileInfo files = 1;
+}
+
+// ============ 文件变更事件 ============
+
+// ChangeType 描述 fsnotify 上报的变更类型。
+enum ChangeType {
+  CHANGE_TYPE_UNSPECIFIED = 0;
+  CHANGE_TYPE_CREATE = 1;
+  CHANGE_TYPE_MODIFY = 2;
+  CHANGE_TYPE_DELETE = 3;
+  CHANGE_TYPE_RENAME = 4;
+}
+
+// FileChange 描述一次文件变更事件。
+// RENAME 时 old_path 是旧路径，file.path 是新路径。
+message FileChange {
+  ChangeType type = 1;
+  FileInfo file = 2;
+  string old_path = 3;
+}
+
+// ============ Server → Daemon 文件操作请求 ============
+
+message ReadFileReq {
+  string path = 1;
+  int64 offset = 2;
+  int64 length = 3;     // 0 表示读全部
+}
+
+message WriteFileReq {
+  string path = 1;
+  bytes content = 2;
+  bool append = 3;
+  uint32 mode = 4;      // 0 表示保持原有
+}
+
+message StatReq {
+  string path = 1;
+}
+
+message ListDirReq {
+  string path = 1;
+}
+
+message DeleteReq {
+  string path = 1;
+}
+
+message MkdirReq {
+  string path = 1;
+  bool recursive = 2;
+}
+
+message RenameReq {
+  string old_path = 1;
+  string new_path = 2;
+}
+
+// FileRequest 是 Server 下发给 Daemon 的单条文件操作请求。
+message FileRequest {
+  string request_id = 1;
+  oneof operation {
+    ReadFileReq read = 2;
+    WriteFileReq write = 3;
+    StatReq stat = 4;
+    ListDirReq list_dir = 5;
+    DeleteReq delete = 6;
+    MkdirReq mkdir = 7;
+    RenameReq rename = 8;
+  }
+}
+
+// FileResponse 是 Daemon 回给 Server 的单条响应。
+message FileResponse {
+  string request_id = 1;
+  bool success = 2;
+  string error = 3;
+  oneof result {
+    bytes content = 4;       // ReadFile 返回
+    FileInfo info = 5;       // Stat 返回
+    FileTree entries = 6;    // ListDir 返回
+  }
+}
+
+// ============ 双向 Stream 消息封装 ============
+
+message Heartbeat {
+  int64 timestamp = 1;
+}
+
+// DaemonMessage 是 Daemon → Server 方向的消息。
+message DaemonMessage {
+  oneof msg {
+    FileTree file_tree = 1;     // 初始全量上报
+    FileChange change = 2;      // 增量变更
+    FileResponse response = 3;  // 文件操作响应
+    Heartbeat heartbeat = 4;
+  }
+}
+
+// ServerMessage 是 Server → Daemon 方向的消息。
+message ServerMessage {
+  oneof msg {
+    FileRequest request = 1;
+    Heartbeat heartbeat = 2;
+  }
+}
+
+// ============ Service ============
+
+service RemoteFS {
+  // Connect 建立 Daemon → Server 的双向 stream。
+  // Daemon 必须先发送 file_tree 完成初始上报，再进入请求/响应循环。
+  rpc Connect(stream DaemonMessage) returns (stream ServerMessage);
+}
