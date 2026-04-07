@@ -79,6 +79,19 @@ func TestManagerNewSessionCarriesCacheConfig(t *testing.T) {
 	assert.EqualValues(t, 64, manager.CacheMaxBytes())
 }
 
+func TestManagerCarriesPrefetchConfig(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(ManagerOptions{
+		PrefetchEnabled:        true,
+		PrefetchMaxFileBytes:   2048,
+		PrefetchMaxFilesPerDir: 4,
+	})
+	assert.True(t, manager.PrefetchEnabled())
+	assert.EqualValues(t, 2048, manager.PrefetchMaxFileBytes())
+	assert.EqualValues(t, 4, manager.PrefetchMaxFilesPerDir())
+}
+
 func TestManagerHandleDisconnectRetainsOfflineReadonly(t *testing.T) {
 	t.Parallel()
 

@@ -141,6 +141,71 @@ loop:
 	}
 }
 
+func TestWatch_SensitivePathSuppressed(t *testing.T) {
+	root := t.TempDir()
+	filter, err := NewSensitiveFilter([]string{"secrets/**"})
+	require.NoError(t, err)
+
+	ch, cancel, wait := startWatch(t, WatchOptions{
+		Root:            root,
+		SensitiveFilter: filter,
+	})
+	defer func() {
+		cancel()
+		assert.NoError(t, wait())
+	}()
+
+	require.NoError(t, os.WriteFile(filepath.Join(root, ".env"), []byte("x"), 0o600))
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "secrets"), 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "visible.txt"), []byte("y"), 0o600))
+
+	ev := waitForMatch(t, ch, func(c *remotefsv1.FileChange) bool {
+		return c.GetFile().GetPath() == "visible.txt"
+	})
+	assert.NotNil(t, ev)
+
+	timeout := time.After(500 * time.Millisecond)
+loop:
+	for {
+		select {
+		case c := <-ch:
+			assert.NotEqual(t, ".env", c.GetFile().GetPath())
+			assert.NotContains(t, c.GetFile().GetPath(), "secrets")
+		case <-timeout:
+			break loop
+		}
+	}
+}
+
+func TestWatch_DoesNotAddSensitiveDirectoryRecursively(t *testing.T) {
+	root := t.TempDir()
+	filter, err := NewSensitiveFilter([]string{"secrets/**"})
+	require.NoError(t, err)
+
+	ch, cancel, wait := startWatch(t, WatchOptions{
+		Root:            root,
+		SensitiveFilter: filter,
+	})
+	defer func() {
+		cancel()
+		assert.NoError(t, wait())
+	}()
+
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "secrets"), 0o750))
+	time.Sleep(100 * time.Millisecond)
+	require.NoError(t, os.WriteFile(filepath.Join(root, "secrets", "hidden.txt"), []byte("x"), 0o600))
+
+	timeout := time.After(500 * time.Millisecond)
+	for {
+		select {
+		case ev := <-ch:
+			assert.NotContains(t, ev.GetFile().GetPath(), "secrets")
+		case <-timeout:
+			return
+		}
+	}
+}
+
 func TestWatch_NewSubdir(t *testing.T) {
 	root := t.TempDir()
 	ch, cancel, wait := startWatch(t, WatchOptions{Root: root})

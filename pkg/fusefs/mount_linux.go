@@ -150,11 +150,12 @@ func (n *workspaceNode) Lookup(ctx context.Context, name string, out *fuse.Entry
 	return n.NewInode(ctx, child, fs.StableAttr{Mode: stableMode(info)}), 0
 }
 
-func (n *workspaceNode) Readdir(_ context.Context) (fs.DirStream, syscall.Errno) {
+func (n *workspaceNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 	infos, err := listInfos(n.manager, n.userID, n.relPath)
 	if err != nil {
 		return nil, errnoFromError(err)
 	}
+	startPrefetch(ctx, n.manager, n.userID, infos)
 	sort.Slice(infos, func(i, j int) bool {
 		return baseName(infos[i].GetPath()) < baseName(infos[j].GetPath())
 	})

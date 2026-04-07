@@ -15,6 +15,7 @@ import (
 
 	remotefsv1 "flyingEirc/Rclaude/api/proto/remotefs/v1"
 	"flyingEirc/Rclaude/internal/testutil"
+	"flyingEirc/Rclaude/pkg/config"
 	"flyingEirc/Rclaude/pkg/session"
 	"flyingEirc/Rclaude/pkg/syncer"
 )
@@ -130,9 +131,12 @@ func NewHarness(t testing.TB, opts ...HarnessOptions) *Harness {
 	return &Harness{
 		t: t,
 		Manager: session.NewManager(session.ManagerOptions{
-			RequestTimeout:     cfg.RequestTimeout,
-			CacheMaxBytes:      cfg.CacheMaxBytes,
-			OfflineReadOnlyTTL: cfg.OfflineReadOnlyTTL,
+			RequestTimeout:         cfg.RequestTimeout,
+			CacheMaxBytes:          cfg.CacheMaxBytes,
+			OfflineReadOnlyTTL:     cfg.OfflineReadOnlyTTL,
+			PrefetchEnabled:        config.DefaultPrefetchEnabled,
+			PrefetchMaxFileBytes:   config.DefaultPrefetchMaxFileBytes,
+			PrefetchMaxFilesPerDir: config.DefaultPrefetchMaxFilesPerDir,
 		}),
 		users: make(map[string]*UserHandle),
 	}
@@ -151,11 +155,19 @@ func (h *Harness) AddUser(opts UserOptions) *UserHandle {
 	h.mu.Unlock()
 
 	daemonRoot := ensureDaemonRoot(h.t, opts.DaemonRoot)
+	sensitiveFilter, err := syncer.NewSensitiveFilter(nil)
+	require.NoError(h.t, err)
+	tree, err := syncer.Scan(syncer.ScanOptions{
+		Root:            daemonRoot,
+		SensitiveFilter: sensitiveFilter,
+	})
+	require.NoError(h.t, err)
+
 	current := h.Manager.NewSession(opts.UserID)
-	_, err := h.Manager.Register(current)
+	_, err = h.Manager.Register(current)
 	require.NoError(h.t, err)
 	require.NoError(h.t, current.Bootstrap(&remotefsv1.DaemonMessage{
-		Msg: &remotefsv1.DaemonMessage_FileTree{FileTree: &remotefsv1.FileTree{}},
+		Msg: &remotefsv1.DaemonMessage_FileTree{FileTree: &remotefsv1.FileTree{Files: tree}},
 	}))
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -179,8 +191,9 @@ func (h *Harness) AddUser(opts UserOptions) *UserHandle {
 		faults:     opts.Faults,
 	}
 	user.loopDoneCh = startHandleLoop(ctx, user, syncer.HandleOptions{
-		Root:        daemonRoot,
-		MaxReadSize: opts.MaxReadSize,
+		Root:            daemonRoot,
+		MaxReadSize:     opts.MaxReadSize,
+		SensitiveFilter: sensitiveFilter,
 	})
 
 	h.mu.Lock()

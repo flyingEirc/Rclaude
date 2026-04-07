@@ -13,17 +13,23 @@ var (
 )
 
 type ManagerOptions struct {
-	RequestTimeout     time.Duration
-	CacheMaxBytes      int64
-	OfflineReadOnlyTTL time.Duration
+	RequestTimeout         time.Duration
+	CacheMaxBytes          int64
+	OfflineReadOnlyTTL     time.Duration
+	PrefetchEnabled        bool
+	PrefetchMaxFileBytes   int64
+	PrefetchMaxFilesPerDir int
 }
 
 type Manager struct {
-	mu                 sync.RWMutex
-	sessions           map[string]*Session
-	requestTimeout     time.Duration
-	cacheMaxBytes      int64
-	offlineReadOnlyTTL time.Duration
+	mu                     sync.RWMutex
+	sessions               map[string]*Session
+	requestTimeout         time.Duration
+	cacheMaxBytes          int64
+	offlineReadOnlyTTL     time.Duration
+	prefetchEnabled        bool
+	prefetchMaxFileBytes   int64
+	prefetchMaxFilesPerDir int
 }
 
 func NewManager(opts ...ManagerOptions) *Manager {
@@ -33,10 +39,13 @@ func NewManager(opts ...ManagerOptions) *Manager {
 	}
 
 	return &Manager{
-		sessions:           make(map[string]*Session),
-		requestTimeout:     cfg.RequestTimeout,
-		cacheMaxBytes:      cfg.CacheMaxBytes,
-		offlineReadOnlyTTL: cfg.OfflineReadOnlyTTL,
+		sessions:               make(map[string]*Session),
+		requestTimeout:         cfg.RequestTimeout,
+		cacheMaxBytes:          cfg.CacheMaxBytes,
+		offlineReadOnlyTTL:     cfg.OfflineReadOnlyTTL,
+		prefetchEnabled:        cfg.PrefetchEnabled,
+		prefetchMaxFileBytes:   cfg.PrefetchMaxFileBytes,
+		prefetchMaxFilesPerDir: cfg.PrefetchMaxFilesPerDir,
 	}
 }
 
@@ -135,6 +144,27 @@ func (m *Manager) CacheMaxBytes() int64 {
 		return 0
 	}
 	return m.cacheMaxBytes
+}
+
+func (m *Manager) PrefetchEnabled() bool {
+	if m == nil {
+		return false
+	}
+	return m.prefetchEnabled
+}
+
+func (m *Manager) PrefetchMaxFileBytes() int64 {
+	if m == nil {
+		return 0
+	}
+	return m.prefetchMaxFileBytes
+}
+
+func (m *Manager) PrefetchMaxFilesPerDir() int {
+	if m == nil {
+		return 0
+	}
+	return m.prefetchMaxFilesPerDir
 }
 
 func (m *Manager) pruneExpiredLocked(now time.Time) {

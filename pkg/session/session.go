@@ -45,6 +45,9 @@ type Session struct {
 	tree   *fstree.Tree
 	cache  *contentcache.Cache
 
+	prefetchMu  sync.Mutex
+	prefetching map[string]struct{}
+
 	pendingMu sync.Mutex
 	pending   map[string]chan *remotefsv1.FileResponse
 
@@ -69,12 +72,13 @@ func NewSession(userID string, opts ...SessionOptions) *Session {
 	}
 
 	return &Session{
-		userID:  userID,
-		sendCh:  make(chan *remotefsv1.ServerMessage, sessionSendBufferSize),
-		tree:    fstree.New(),
-		cache:   contentcache.New(cfg.CacheMaxBytes),
-		pending: make(map[string]chan *remotefsv1.FileResponse),
-		closed:  make(chan struct{}),
+		userID:      userID,
+		sendCh:      make(chan *remotefsv1.ServerMessage, sessionSendBufferSize),
+		tree:        fstree.New(),
+		cache:       contentcache.New(cfg.CacheMaxBytes),
+		prefetching: make(map[string]struct{}),
+		pending:     make(map[string]chan *remotefsv1.FileResponse),
+		closed:      make(chan struct{}),
 	}
 }
 
@@ -286,6 +290,31 @@ func (s *Session) InvalidateContentPrefix(relPath string) {
 		return
 	}
 	s.currentCache().InvalidatePrefix(relPath)
+}
+
+func (s *Session) TryStartPrefetch(relPath string) bool {
+	if s == nil || relPath == "" {
+		return false
+	}
+
+	s.prefetchMu.Lock()
+	defer s.prefetchMu.Unlock()
+
+	if _, exists := s.prefetching[relPath]; exists {
+		return false
+	}
+	s.prefetching[relPath] = struct{}{}
+	return true
+}
+
+func (s *Session) FinishPrefetch(relPath string) {
+	if s == nil || relPath == "" {
+		return
+	}
+
+	s.prefetchMu.Lock()
+	defer s.prefetchMu.Unlock()
+	delete(s.prefetching, relPath)
 }
 
 func (s *Session) runSendLoop(ctx context.Context, stream remotefsv1.RemoteFS_ConnectServer) error {

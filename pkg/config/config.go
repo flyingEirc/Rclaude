@@ -11,10 +11,13 @@ import (
 )
 
 const (
-	envPrefix                 = "RCLAUDE"
-	DefaultRequestTimeout     = 10 * time.Second
-	DefaultSelfWriteTTL       = 2 * time.Second
-	DefaultOfflineReadOnlyTTL = 5 * time.Minute
+	envPrefix                           = "RCLAUDE"
+	DefaultRequestTimeout               = 10 * time.Second
+	DefaultSelfWriteTTL                 = 2 * time.Second
+	DefaultOfflineReadOnlyTTL           = 5 * time.Minute
+	DefaultPrefetchEnabled              = true
+	DefaultPrefetchMaxFileBytes   int64 = 100 * 1024
+	DefaultPrefetchMaxFilesPerDir       = 16
 )
 
 var (
@@ -31,8 +34,9 @@ type ServerEndpoint struct {
 }
 
 type Workspace struct {
-	Path    string   `mapstructure:"path"`
-	Exclude []string `mapstructure:"exclude"`
+	Path              string   `mapstructure:"path"`
+	Exclude           []string `mapstructure:"exclude"`
+	SensitivePatterns []string `mapstructure:"sensitive_patterns"`
 }
 
 type LogConfig struct {
@@ -59,14 +63,21 @@ type CacheConfig struct {
 	MaxBytes int64 `mapstructure:"max_bytes"`
 }
 
+type PrefetchConfig struct {
+	Enabled        bool  `mapstructure:"enabled"`
+	MaxFileBytes   int64 `mapstructure:"max_file_bytes"`
+	MaxFilesPerDir int   `mapstructure:"max_files_per_dir"`
+}
+
 type ServerConfig struct {
-	Listen             string        `mapstructure:"listen"`
-	Auth               AuthConfig    `mapstructure:"auth"`
-	FUSE               FUSEConfig    `mapstructure:"fuse"`
-	Cache              CacheConfig   `mapstructure:"cache"`
-	Log                LogConfig     `mapstructure:"log"`
-	RequestTimeout     time.Duration `mapstructure:"request_timeout"`
-	OfflineReadOnlyTTL time.Duration `mapstructure:"offline_readonly_ttl"`
+	Listen             string         `mapstructure:"listen"`
+	Auth               AuthConfig     `mapstructure:"auth"`
+	FUSE               FUSEConfig     `mapstructure:"fuse"`
+	Cache              CacheConfig    `mapstructure:"cache"`
+	Prefetch           PrefetchConfig `mapstructure:"prefetch"`
+	Log                LogConfig      `mapstructure:"log"`
+	RequestTimeout     time.Duration  `mapstructure:"request_timeout"`
+	OfflineReadOnlyTTL time.Duration  `mapstructure:"offline_readonly_ttl"`
 }
 
 func LoadDaemon(path string) (*DaemonConfig, error) {
@@ -147,5 +158,10 @@ func defaultServerConfig() ServerConfig {
 	return ServerConfig{
 		RequestTimeout:     DefaultRequestTimeout,
 		OfflineReadOnlyTTL: DefaultOfflineReadOnlyTTL,
+		Prefetch: PrefetchConfig{
+			Enabled:        DefaultPrefetchEnabled,
+			MaxFileBytes:   DefaultPrefetchMaxFileBytes,
+			MaxFilesPerDir: DefaultPrefetchMaxFilesPerDir,
+		},
 	}
 }

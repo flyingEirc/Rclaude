@@ -21,8 +21,9 @@ var (
 )
 
 type ScanOptions struct {
-	Root     string
-	Excludes []string
+	Root            string
+	Excludes        []string
+	SensitiveFilter *SensitiveFilter
 }
 
 func Scan(opts ScanOptions) ([]*remotefsv1.FileInfo, error) {
@@ -54,7 +55,7 @@ func validateScanRoot(root string) error {
 
 func scanWalkFn(opts ScanOptions, out *[]*remotefsv1.FileInfo) fs.WalkDirFunc {
 	return func(p string, d fs.DirEntry, walkErr error) error {
-		entry, skipDir := scanEntry(opts.Root, p, d, walkErr, opts.Excludes)
+		entry, skipDir := scanEntry(opts.Root, p, d, walkErr, opts.Excludes, opts.SensitiveFilter)
 		if skipDir {
 			return filepath.SkipDir
 		}
@@ -71,6 +72,7 @@ func scanEntry(
 	d fs.DirEntry,
 	walkErr error,
 	excludes []string,
+	filter *SensitiveFilter,
 ) (*remotefsv1.FileInfo, bool) {
 	if walkErr != nil || p == root {
 		return nil, false
@@ -79,6 +81,9 @@ func scanEntry(
 	rel, ok := scanRelativePath(root, p)
 	if !ok {
 		return nil, false
+	}
+	if filter != nil && filter.Match(rel) {
+		return nil, d.IsDir()
 	}
 	if matchExclude(rel, excludes) {
 		return nil, d.IsDir()

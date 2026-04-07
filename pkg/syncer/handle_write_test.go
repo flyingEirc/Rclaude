@@ -16,10 +16,13 @@ func newWriteOpts(t *testing.T) (HandleOptions, writeDeps, string) {
 	t.Helper()
 
 	root := t.TempDir()
+	filter, err := NewSensitiveFilter(nil)
+	require.NoError(t, err)
 	opts := HandleOptions{
-		Root:       root,
-		Locker:     newPathLocker(),
-		SelfWrites: newSelfWriteFilter(2 * time.Second),
+		Root:            root,
+		Locker:          newPathLocker(),
+		SelfWrites:      newSelfWriteFilter(2 * time.Second),
+		SensitiveFilter: filter,
 	}
 	return opts, depsFromOptions(opts), root
 }
@@ -140,4 +143,55 @@ func TestHandleTruncate_InvalidArgument(t *testing.T) {
 	}, opts, deps)
 	assert.False(t, resp.GetSuccess())
 	assert.Contains(t, resp.GetError(), "invalid argument")
+}
+
+func TestHandleWriteOps_DenySensitivePaths(t *testing.T) {
+	t.Parallel()
+
+	opts, deps, root := newWriteOpts(t)
+	filter, err := NewSensitiveFilter([]string{"secrets/**"})
+	require.NoError(t, err)
+	opts.SensitiveFilter = filter
+	require.NoError(t, os.MkdirAll(filepath.Join(root, ".ssh"), 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(root, ".env"), []byte("secret"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(root, ".ssh", "id_ed25519"), []byte("secret"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "plain.txt"), []byte("plain"), 0o600))
+
+	tests := []struct {
+		name string
+		resp *remotefsv1.FileResponse
+	}{
+		{
+			name: "write sensitive file",
+			resp: handleWrite("w1", &remotefsv1.WriteFileReq{Path: ".env", Content: []byte("x")}, opts, deps),
+		},
+		{
+			name: "mkdir sensitive dir",
+			resp: handleMkdir("m1", &remotefsv1.MkdirReq{Path: "secrets"}, opts, deps),
+		},
+		{
+			name: "delete sensitive file",
+			resp: handleDelete("d1", &remotefsv1.DeleteReq{Path: ".ssh/id_ed25519"}, opts, deps),
+		},
+		{
+			name: "rename into sensitive target",
+			resp: handleRename("r1", &remotefsv1.RenameReq{OldPath: "plain.txt", NewPath: ".env"}, opts, deps),
+		},
+		{
+			name: "rename from sensitive source",
+			resp: handleRename("r2", &remotefsv1.RenameReq{OldPath: ".env", NewPath: "renamed.txt"}, opts, deps),
+		},
+		{
+			name: "truncate sensitive file",
+			resp: handleTruncate("t1", &remotefsv1.TruncateReq{Path: ".env", Size: 0}, opts, deps),
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			assert.False(t, tc.resp.GetSuccess())
+			assert.Contains(t, tc.resp.GetError(), "permission denied")
+		})
+	}
 }

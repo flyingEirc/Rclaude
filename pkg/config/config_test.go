@@ -44,6 +44,7 @@ server:
 workspace:
   path: ` + escapeYAML(absWorkspace()) + `
   exclude: [".git", "node_modules"]
+  sensitive_patterns: ["secrets/**", "*.local.env"]
 log:
   level: "info"
   format: "json"
@@ -55,6 +56,7 @@ log:
 	assert.Equal(t, "tk", cfg.Server.Token)
 	assert.Equal(t, absWorkspace(), cfg.Workspace.Path)
 	assert.Equal(t, []string{".git", "node_modules"}, cfg.Workspace.Exclude)
+	assert.Equal(t, []string{"secrets/**", "*.local.env"}, cfg.Workspace.SensitivePatterns)
 	assert.Equal(t, "info", cfg.Log.Level)
 	assert.Equal(t, "json", cfg.Log.Format)
 }
@@ -111,6 +113,9 @@ log:
 	assert.Equal(t, int64(268435456), cfg.Cache.MaxBytes)
 	assert.Equal(t, "warn", cfg.Log.Level)
 	assert.Equal(t, config.DefaultOfflineReadOnlyTTL, cfg.OfflineReadOnlyTTL)
+	assert.Equal(t, config.DefaultPrefetchEnabled, cfg.Prefetch.Enabled)
+	assert.Equal(t, config.DefaultPrefetchMaxFileBytes, cfg.Prefetch.MaxFileBytes)
+	assert.Equal(t, config.DefaultPrefetchMaxFilesPerDir, cfg.Prefetch.MaxFilesPerDir)
 }
 
 func TestLoadServerMissingListen(t *testing.T) {
@@ -171,6 +176,27 @@ offline_readonly_ttl: 0s
 	cfg, err := config.LoadServer(path)
 	require.NoError(t, err)
 	assert.Zero(t, cfg.OfflineReadOnlyTTL)
+}
+
+func TestLoadServerExplicitPrefetchConfig(t *testing.T) {
+	t.Parallel()
+	body := `
+listen: ":9000"
+auth:
+  tokens: { "t": "u" }
+fuse:
+  mountpoint: ` + escapeYAML(absMountpoint()) + `
+prefetch:
+  enabled: false
+  max_file_bytes: 2048
+  max_files_per_dir: 4
+`
+	path := writeYAML(t, "server.yaml", body)
+	cfg, err := config.LoadServer(path)
+	require.NoError(t, err)
+	assert.False(t, cfg.Prefetch.Enabled)
+	assert.EqualValues(t, 2048, cfg.Prefetch.MaxFileBytes)
+	assert.EqualValues(t, 4, cfg.Prefetch.MaxFilesPerDir)
 }
 
 func TestLoadDaemonEnvOverride(t *testing.T) {
