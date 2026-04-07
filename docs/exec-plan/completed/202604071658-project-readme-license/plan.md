@@ -41,8 +41,8 @@
 - [x] 执行 `make test`
 - [x] 执行 `make build`
 - [x] 检查分支与提交状态
-- [ ] 提交到 `master`
-- [ ] 归档到 `completed/` 并补完成摘要
+- [x] 提交到 `master`
+- [x] 归档到 `completed/` 并补完成摘要
 
 ## 验收标准
 
