@@ -33,8 +33,14 @@ func TestInmem_PrefetchWarmsCacheAndChangeInvalidates(t *testing.T) {
 	startPrefetch(context.Background(), harness.Manager, user.UserID, infos)
 
 	require.Eventually(t, func() bool {
-		return user.ReadRequestCount() == 1
+		info, ok := user.Session.Lookup("prefetch.txt")
+		if !ok {
+			return false
+		}
+		data, cached := user.Session.GetCachedContent("prefetch.txt", info)
+		return cached && string(data) == "hello"
 	}, time.Second, 10*time.Millisecond)
+	assert.EqualValues(t, 1, user.ReadRequestCount())
 
 	got, err := readChunk(context.Background(), harness.Manager, user.UserID, "prefetch.txt", 0, 5)
 	require.NoError(t, err)
@@ -57,6 +63,10 @@ func TestInmem_PrefetchWarmsCacheAndChangeInvalidates(t *testing.T) {
 	require.True(t, user.WaitForPath("prefetch.txt", time.Second, func(info *remotefsv1.FileInfo, ok bool) bool {
 		return ok && info.GetSize() == fi.Size() && info.GetModTime() == fi.ModTime().Unix()
 	}))
+	info, ok := user.Session.Lookup("prefetch.txt")
+	require.True(t, ok)
+	_, cached := user.Session.GetCachedContent("prefetch.txt", info)
+	assert.False(t, cached)
 
 	got, err = readChunk(context.Background(), harness.Manager, user.UserID, "prefetch.txt", 0, 6)
 	require.NoError(t, err)
