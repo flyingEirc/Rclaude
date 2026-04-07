@@ -12,7 +12,7 @@ ifeq ($(OS),Windows_NT)
 endif
 
 # ─── 工具版本 ─────────────────────────────────────────────
-GOLANGCI_LINT_VERSION ?= v2.1.6
+GOLANGCI_LINT_VERSION ?= v2.6.2
 GOFUMPT_VERSION       ?= v0.7.0
 GCI_VERSION           ?= v0.13.5
 
