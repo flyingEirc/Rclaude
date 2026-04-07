@@ -1,2 +1,2 @@
-// Package fusefs exposes daemon sessions as a read-only FUSE filesystem.
+// Package fusefs exposes daemon sessions as a FUSE filesystem.
 package fusefs
