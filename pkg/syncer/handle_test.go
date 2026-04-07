@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -50,6 +51,7 @@ func TestHandle_Read_OffsetAndLength(t *testing.T) {
 		{"beyond end", 100, 0, ""},
 		{"negative offset normalized", -5, 0, "hello world"},
 	}
+
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			resp := Handle(&remotefsv1.FileRequest{
@@ -71,6 +73,7 @@ func TestHandle_Read_OffsetAndLength(t *testing.T) {
 func TestHandle_Read_MaxSizeCap(t *testing.T) {
 	root := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(root, "big.bin"), []byte("0123456789"), 0o600))
+
 	resp := Handle(&remotefsv1.FileRequest{
 		Operation: &remotefsv1.FileRequest_Read{
 			Read: &remotefsv1.ReadFileReq{Path: "big.bin"},
@@ -105,6 +108,7 @@ func TestHandle_Read_Missing(t *testing.T) {
 func TestHandle_Stat_File(t *testing.T) {
 	root := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(root, "f.txt"), []byte("abc"), 0o600))
+
 	resp := Handle(&remotefsv1.FileRequest{
 		RequestId: "s1",
 		Operation: &remotefsv1.FileRequest_Stat{
@@ -122,6 +126,7 @@ func TestHandle_Stat_File(t *testing.T) {
 func TestHandle_Stat_Dir(t *testing.T) {
 	root := t.TempDir()
 	require.NoError(t, os.Mkdir(filepath.Join(root, "d"), 0o750))
+
 	resp := Handle(&remotefsv1.FileRequest{
 		Operation: &remotefsv1.FileRequest_Stat{
 			Stat: &remotefsv1.StatReq{Path: "d"},
@@ -190,24 +195,43 @@ func TestHandle_ListDir_Missing(t *testing.T) {
 	assert.Contains(t, resp.GetError(), "list")
 }
 
-func TestHandle_UnsupportedOperations(t *testing.T) {
+func TestHandle_WriteDeleteMkdirRenameTruncate(t *testing.T) {
 	root := t.TempDir()
-	cases := []struct {
-		name string
-		req  *remotefsv1.FileRequest
-	}{
-		{"write", &remotefsv1.FileRequest{Operation: &remotefsv1.FileRequest_Write{Write: &remotefsv1.WriteFileReq{Path: "f"}}}},
-		{"delete", &remotefsv1.FileRequest{Operation: &remotefsv1.FileRequest_Delete{Delete: &remotefsv1.DeleteReq{Path: "f"}}}},
-		{"mkdir", &remotefsv1.FileRequest{Operation: &remotefsv1.FileRequest_Mkdir{Mkdir: &remotefsv1.MkdirReq{Path: "d"}}}},
-		{"rename", &remotefsv1.FileRequest{Operation: &remotefsv1.FileRequest_Rename{Rename: &remotefsv1.RenameReq{OldPath: "a", NewPath: "b"}}}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			resp := Handle(tc.req, HandleOptions{Root: root})
-			assert.False(t, resp.GetSuccess())
-			assert.Contains(t, resp.GetError(), "not supported")
-		})
-	}
+
+	writeResp := Handle(&remotefsv1.FileRequest{
+		Operation: &remotefsv1.FileRequest_Write{
+			Write: &remotefsv1.WriteFileReq{Path: "f.txt", Content: []byte("hello")},
+		},
+	}, HandleOptions{Root: root, Locker: newPathLocker(), SelfWrites: newSelfWriteFilter(time.Second)})
+	require.True(t, writeResp.GetSuccess(), writeResp.GetError())
+
+	mkdirResp := Handle(&remotefsv1.FileRequest{
+		Operation: &remotefsv1.FileRequest_Mkdir{
+			Mkdir: &remotefsv1.MkdirReq{Path: "dir"},
+		},
+	}, HandleOptions{Root: root, Locker: newPathLocker(), SelfWrites: newSelfWriteFilter(time.Second)})
+	require.True(t, mkdirResp.GetSuccess(), mkdirResp.GetError())
+
+	renameResp := Handle(&remotefsv1.FileRequest{
+		Operation: &remotefsv1.FileRequest_Rename{
+			Rename: &remotefsv1.RenameReq{OldPath: "f.txt", NewPath: "dir/f.txt"},
+		},
+	}, HandleOptions{Root: root, Locker: newPathLocker(), SelfWrites: newSelfWriteFilter(time.Second)})
+	require.True(t, renameResp.GetSuccess(), renameResp.GetError())
+
+	truncateResp := Handle(&remotefsv1.FileRequest{
+		Operation: &remotefsv1.FileRequest_Truncate{
+			Truncate: &remotefsv1.TruncateReq{Path: "dir/f.txt", Size: 2},
+		},
+	}, HandleOptions{Root: root, Locker: newPathLocker(), SelfWrites: newSelfWriteFilter(time.Second)})
+	require.True(t, truncateResp.GetSuccess(), truncateResp.GetError())
+
+	deleteResp := Handle(&remotefsv1.FileRequest{
+		Operation: &remotefsv1.FileRequest_Delete{
+			Delete: &remotefsv1.DeleteReq{Path: "dir/f.txt"},
+		},
+	}, HandleOptions{Root: root, Locker: newPathLocker(), SelfWrites: newSelfWriteFilter(time.Second)})
+	require.True(t, deleteResp.GetSuccess(), deleteResp.GetError())
 }
 
 func TestHandle_UnknownOperation(t *testing.T) {

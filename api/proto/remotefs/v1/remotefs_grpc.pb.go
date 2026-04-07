@@ -8,6 +8,7 @@ package remotefsv1
 
 import (
 	context "context"
+
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
@@ -26,8 +27,6 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type RemoteFSClient interface {
-	// Connect 建立 Daemon → Server 的双向 stream。
-	// Daemon 必须先发送 file_tree 完成初始上报，再进入请求/响应循环。
 	Connect(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[DaemonMessage, ServerMessage], error)
 }
 
@@ -56,8 +55,6 @@ type RemoteFS_ConnectClient = grpc.BidiStreamingClient[DaemonMessage, ServerMess
 // All implementations must embed UnimplementedRemoteFSServer
 // for forward compatibility.
 type RemoteFSServer interface {
-	// Connect 建立 Daemon → Server 的双向 stream。
-	// Daemon 必须先发送 file_tree 完成初始上报，再进入请求/响应循环。
 	Connect(grpc.BidiStreamingServer[DaemonMessage, ServerMessage]) error
 	mustEmbedUnimplementedRemoteFSServer()
 }

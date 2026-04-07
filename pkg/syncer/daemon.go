@@ -179,6 +179,13 @@ func serveStream(
 ) error {
 	sendQueue := make(chan *remotefsv1.DaemonMessage, daemonOutgoingBufferSize)
 	watchEvents := make(chan *remotefsv1.FileChange, daemonWatchEventBufferSize)
+	locker := newPathLocker()
+	selfWrites := newSelfWriteFilter(opts.Config.SelfWriteTTL)
+	handleOpts := HandleOptions{
+		Root:       opts.Config.Workspace.Path,
+		Locker:     locker,
+		SelfWrites: selfWrites,
+	}
 
 	group, groupCtx := errgroup.WithContext(ctx)
 	start := func(fn func(context.Context) error) {
@@ -195,14 +202,15 @@ func serveStream(
 		return runSendLoop(ctx, stream, sendQueue)
 	})
 	start(func(ctx context.Context) error {
-		return runRecvLoop(ctx, stream, opts, sendQueue)
+		return runRecvLoop(ctx, stream, handleOpts, sendQueue)
 	})
 	start(func(ctx context.Context) error {
 		return Watch(ctx, WatchOptions{
-			Root:     opts.Config.Workspace.Path,
-			Excludes: opts.Config.Workspace.Exclude,
-			Events:   watchEvents,
-			Logger:   logger,
+			Root:       opts.Config.Workspace.Path,
+			Excludes:   opts.Config.Workspace.Exclude,
+			Events:     watchEvents,
+			Logger:     logger,
+			SelfWrites: selfWrites,
 		})
 	})
 	start(func(ctx context.Context) error {
@@ -245,7 +253,7 @@ func runSendLoop(
 func runRecvLoop(
 	ctx context.Context,
 	stream remotefsv1.RemoteFS_ConnectClient,
-	opts RunOptions,
+	handleOpts HandleOptions,
 	sendQueue chan<- *remotefsv1.DaemonMessage,
 ) error {
 	for {
@@ -256,9 +264,7 @@ func runRecvLoop(
 
 		switch body := msg.GetMsg().(type) {
 		case *remotefsv1.ServerMessage_Request:
-			response := Handle(body.Request, HandleOptions{
-				Root: opts.Config.Workspace.Path,
-			})
+			response := Handle(body.Request, handleOpts)
 			if !queueDaemonMessage(ctx, sendQueue, &remotefsv1.DaemonMessage{
 				Msg: &remotefsv1.DaemonMessage_Response{Response: response},
 			}) {

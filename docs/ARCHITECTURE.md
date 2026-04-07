@@ -8,7 +8,7 @@
 
 相关执行计划：
 
-- [`202604061547-remote-file-agent-impl-plan.md`](/e:/Rclaude/docs/exec-plan/active/202604061547-remote-file-agent-impl-plan.md)
+- [`202604071046-phase3-server-fuse-mvp/`](/e:/Rclaude/docs/exec-plan/completed/202604071046-phase3-server-fuse-mvp/)
 
 ## 一、实现架构
 

@@ -7,11 +7,12 @@
 package remotefsv1
 
 import (
-	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
-	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
+
+	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
+	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 )
 
 const (
@@ -21,7 +22,6 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// ChangeType 描述 fsnotify 上报的变更类型。
 type ChangeType int32
 
 const (
@@ -77,15 +77,13 @@ func (ChangeType) EnumDescriptor() ([]byte, []int) {
 	return file_remotefs_v1_remotefs_proto_rawDescGZIP(), []int{0}
 }
 
-// FileInfo 描述工作区中的一个文件或目录元数据。
-// path 字段统一使用 forward slash 相对路径，不包含 leading slash。
 type FileInfo struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Path          string                 `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`
 	Size          int64                  `protobuf:"varint,2,opt,name=size,proto3" json:"size,omitempty"`
-	ModTime       int64                  `protobuf:"varint,3,opt,name=mod_time,json=modTime,proto3" json:"mod_time,omitempty"` // Unix timestamp (seconds since epoch)
+	ModTime       int64                  `protobuf:"varint,3,opt,name=mod_time,json=modTime,proto3" json:"mod_time,omitempty"`
 	IsDir         bool                   `protobuf:"varint,4,opt,name=is_dir,json=isDir,proto3" json:"is_dir,omitempty"`
-	Mode          uint32                 `protobuf:"varint,5,opt,name=mode,proto3" json:"mode,omitempty"` // POSIX 文件权限位
+	Mode          uint32                 `protobuf:"varint,5,opt,name=mode,proto3" json:"mode,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -155,7 +153,6 @@ func (x *FileInfo) GetMode() uint32 {
 	return 0
 }
 
-// FileTree 是 FileInfo 的集合，可承载完整或部分目录树。
 type FileTree struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Files         []*FileInfo            `protobuf:"bytes,1,rep,name=files,proto3" json:"files,omitempty"`
@@ -200,8 +197,6 @@ func (x *FileTree) GetFiles() []*FileInfo {
 	return nil
 }
 
-// FileChange 描述一次文件变更事件。
-// RENAME 时 old_path 是旧路径，file.path 是新路径。
 type FileChange struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Type          ChangeType             `protobuf:"varint,1,opt,name=type,proto3,enum=remotefs.v1.ChangeType" json:"type,omitempty"`
@@ -266,7 +261,7 @@ type ReadFileReq struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Path          string                 `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`
 	Offset        int64                  `protobuf:"varint,2,opt,name=offset,proto3" json:"offset,omitempty"`
-	Length        int64                  `protobuf:"varint,3,opt,name=length,proto3" json:"length,omitempty"` // 0 表示读全部
+	Length        int64                  `protobuf:"varint,3,opt,name=length,proto3" json:"length,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -327,7 +322,8 @@ type WriteFileReq struct {
 	Path          string                 `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`
 	Content       []byte                 `protobuf:"bytes,2,opt,name=content,proto3" json:"content,omitempty"`
 	Append        bool                   `protobuf:"varint,3,opt,name=append,proto3" json:"append,omitempty"`
-	Mode          uint32                 `protobuf:"varint,4,opt,name=mode,proto3" json:"mode,omitempty"` // 0 表示保持原有
+	Mode          uint32                 `protobuf:"varint,4,opt,name=mode,proto3" json:"mode,omitempty"`
+	Offset        int64                  `protobuf:"varint,5,opt,name=offset,proto3" json:"offset,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -386,6 +382,13 @@ func (x *WriteFileReq) GetAppend() bool {
 func (x *WriteFileReq) GetMode() uint32 {
 	if x != nil {
 		return x.Mode
+	}
+	return 0
+}
+
+func (x *WriteFileReq) GetOffset() int64 {
+	if x != nil {
+		return x.Offset
 	}
 	return 0
 }
@@ -626,7 +629,58 @@ func (x *RenameReq) GetNewPath() string {
 	return ""
 }
 
-// FileRequest 是 Server 下发给 Daemon 的单条文件操作请求。
+type TruncateReq struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Path          string                 `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`
+	Size          int64                  `protobuf:"varint,2,opt,name=size,proto3" json:"size,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TruncateReq) Reset() {
+	*x = TruncateReq{}
+	mi := &file_remotefs_v1_remotefs_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TruncateReq) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TruncateReq) ProtoMessage() {}
+
+func (x *TruncateReq) ProtoReflect() protoreflect.Message {
+	mi := &file_remotefs_v1_remotefs_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TruncateReq.ProtoReflect.Descriptor instead.
+func (*TruncateReq) Descriptor() ([]byte, []int) {
+	return file_remotefs_v1_remotefs_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *TruncateReq) GetPath() string {
+	if x != nil {
+		return x.Path
+	}
+	return ""
+}
+
+func (x *TruncateReq) GetSize() int64 {
+	if x != nil {
+		return x.Size
+	}
+	return 0
+}
+
 type FileRequest struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
 	RequestId string                 `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
@@ -639,6 +693,7 @@ type FileRequest struct {
 	//	*FileRequest_Delete
 	//	*FileRequest_Mkdir
 	//	*FileRequest_Rename
+	//	*FileRequest_Truncate
 	Operation     isFileRequest_Operation `protobuf_oneof:"operation"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -646,7 +701,7 @@ type FileRequest struct {
 
 func (x *FileRequest) Reset() {
 	*x = FileRequest{}
-	mi := &file_remotefs_v1_remotefs_proto_msgTypes[10]
+	mi := &file_remotefs_v1_remotefs_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -658,7 +713,7 @@ func (x *FileRequest) String() string {
 func (*FileRequest) ProtoMessage() {}
 
 func (x *FileRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_remotefs_v1_remotefs_proto_msgTypes[10]
+	mi := &file_remotefs_v1_remotefs_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -671,7 +726,7 @@ func (x *FileRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FileRequest.ProtoReflect.Descriptor instead.
 func (*FileRequest) Descriptor() ([]byte, []int) {
-	return file_remotefs_v1_remotefs_proto_rawDescGZIP(), []int{10}
+	return file_remotefs_v1_remotefs_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *FileRequest) GetRequestId() string {
@@ -751,6 +806,15 @@ func (x *FileRequest) GetRename() *RenameReq {
 	return nil
 }
 
+func (x *FileRequest) GetTruncate() *TruncateReq {
+	if x != nil {
+		if x, ok := x.Operation.(*FileRequest_Truncate); ok {
+			return x.Truncate
+		}
+	}
+	return nil
+}
+
 type isFileRequest_Operation interface {
 	isFileRequest_Operation()
 }
@@ -783,6 +847,10 @@ type FileRequest_Rename struct {
 	Rename *RenameReq `protobuf:"bytes,8,opt,name=rename,proto3,oneof"`
 }
 
+type FileRequest_Truncate struct {
+	Truncate *TruncateReq `protobuf:"bytes,9,opt,name=truncate,proto3,oneof"`
+}
+
 func (*FileRequest_Read) isFileRequest_Operation() {}
 
 func (*FileRequest_Write) isFileRequest_Operation() {}
@@ -797,7 +865,8 @@ func (*FileRequest_Mkdir) isFileRequest_Operation() {}
 
 func (*FileRequest_Rename) isFileRequest_Operation() {}
 
-// FileResponse 是 Daemon 回给 Server 的单条响应。
+func (*FileRequest_Truncate) isFileRequest_Operation() {}
+
 type FileResponse struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
 	RequestId string                 `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
@@ -815,7 +884,7 @@ type FileResponse struct {
 
 func (x *FileResponse) Reset() {
 	*x = FileResponse{}
-	mi := &file_remotefs_v1_remotefs_proto_msgTypes[11]
+	mi := &file_remotefs_v1_remotefs_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -827,7 +896,7 @@ func (x *FileResponse) String() string {
 func (*FileResponse) ProtoMessage() {}
 
 func (x *FileResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_remotefs_v1_remotefs_proto_msgTypes[11]
+	mi := &file_remotefs_v1_remotefs_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -840,7 +909,7 @@ func (x *FileResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FileResponse.ProtoReflect.Descriptor instead.
 func (*FileResponse) Descriptor() ([]byte, []int) {
-	return file_remotefs_v1_remotefs_proto_rawDescGZIP(), []int{11}
+	return file_remotefs_v1_remotefs_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *FileResponse) GetRequestId() string {
@@ -903,15 +972,15 @@ type isFileResponse_Result interface {
 }
 
 type FileResponse_Content struct {
-	Content []byte `protobuf:"bytes,4,opt,name=content,proto3,oneof"` // ReadFile 返回
+	Content []byte `protobuf:"bytes,4,opt,name=content,proto3,oneof"`
 }
 
 type FileResponse_Info struct {
-	Info *FileInfo `protobuf:"bytes,5,opt,name=info,proto3,oneof"` // Stat 返回
+	Info *FileInfo `protobuf:"bytes,5,opt,name=info,proto3,oneof"`
 }
 
 type FileResponse_Entries struct {
-	Entries *FileTree `protobuf:"bytes,6,opt,name=entries,proto3,oneof"` // ListDir 返回
+	Entries *FileTree `protobuf:"bytes,6,opt,name=entries,proto3,oneof"`
 }
 
 func (*FileResponse_Content) isFileResponse_Result() {}
@@ -929,7 +998,7 @@ type Heartbeat struct {
 
 func (x *Heartbeat) Reset() {
 	*x = Heartbeat{}
-	mi := &file_remotefs_v1_remotefs_proto_msgTypes[12]
+	mi := &file_remotefs_v1_remotefs_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -941,7 +1010,7 @@ func (x *Heartbeat) String() string {
 func (*Heartbeat) ProtoMessage() {}
 
 func (x *Heartbeat) ProtoReflect() protoreflect.Message {
-	mi := &file_remotefs_v1_remotefs_proto_msgTypes[12]
+	mi := &file_remotefs_v1_remotefs_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -954,7 +1023,7 @@ func (x *Heartbeat) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Heartbeat.ProtoReflect.Descriptor instead.
 func (*Heartbeat) Descriptor() ([]byte, []int) {
-	return file_remotefs_v1_remotefs_proto_rawDescGZIP(), []int{12}
+	return file_remotefs_v1_remotefs_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *Heartbeat) GetTimestamp() int64 {
@@ -964,7 +1033,6 @@ func (x *Heartbeat) GetTimestamp() int64 {
 	return 0
 }
 
-// DaemonMessage 是 Daemon → Server 方向的消息。
 type DaemonMessage struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Types that are valid to be assigned to Msg:
@@ -980,7 +1048,7 @@ type DaemonMessage struct {
 
 func (x *DaemonMessage) Reset() {
 	*x = DaemonMessage{}
-	mi := &file_remotefs_v1_remotefs_proto_msgTypes[13]
+	mi := &file_remotefs_v1_remotefs_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -992,7 +1060,7 @@ func (x *DaemonMessage) String() string {
 func (*DaemonMessage) ProtoMessage() {}
 
 func (x *DaemonMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_remotefs_v1_remotefs_proto_msgTypes[13]
+	mi := &file_remotefs_v1_remotefs_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1005,7 +1073,7 @@ func (x *DaemonMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DaemonMessage.ProtoReflect.Descriptor instead.
 func (*DaemonMessage) Descriptor() ([]byte, []int) {
-	return file_remotefs_v1_remotefs_proto_rawDescGZIP(), []int{13}
+	return file_remotefs_v1_remotefs_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *DaemonMessage) GetMsg() isDaemonMessage_Msg {
@@ -1056,15 +1124,15 @@ type isDaemonMessage_Msg interface {
 }
 
 type DaemonMessage_FileTree struct {
-	FileTree *FileTree `protobuf:"bytes,1,opt,name=file_tree,json=fileTree,proto3,oneof"` // 初始全量上报
+	FileTree *FileTree `protobuf:"bytes,1,opt,name=file_tree,json=fileTree,proto3,oneof"`
 }
 
 type DaemonMessage_Change struct {
-	Change *FileChange `protobuf:"bytes,2,opt,name=change,proto3,oneof"` // 增量变更
+	Change *FileChange `protobuf:"bytes,2,opt,name=change,proto3,oneof"`
 }
 
 type DaemonMessage_Response struct {
-	Response *FileResponse `protobuf:"bytes,3,opt,name=response,proto3,oneof"` // 文件操作响应
+	Response *FileResponse `protobuf:"bytes,3,opt,name=response,proto3,oneof"`
 }
 
 type DaemonMessage_Heartbeat struct {
@@ -1079,7 +1147,6 @@ func (*DaemonMessage_Response) isDaemonMessage_Msg() {}
 
 func (*DaemonMessage_Heartbeat) isDaemonMessage_Msg() {}
 
-// ServerMessage 是 Server → Daemon 方向的消息。
 type ServerMessage struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Types that are valid to be assigned to Msg:
@@ -1093,7 +1160,7 @@ type ServerMessage struct {
 
 func (x *ServerMessage) Reset() {
 	*x = ServerMessage{}
-	mi := &file_remotefs_v1_remotefs_proto_msgTypes[14]
+	mi := &file_remotefs_v1_remotefs_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1105,7 +1172,7 @@ func (x *ServerMessage) String() string {
 func (*ServerMessage) ProtoMessage() {}
 
 func (x *ServerMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_remotefs_v1_remotefs_proto_msgTypes[14]
+	mi := &file_remotefs_v1_remotefs_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1118,7 +1185,7 @@ func (x *ServerMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ServerMessage.ProtoReflect.Descriptor instead.
 func (*ServerMessage) Descriptor() ([]byte, []int) {
-	return file_remotefs_v1_remotefs_proto_rawDescGZIP(), []int{14}
+	return file_remotefs_v1_remotefs_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *ServerMessage) GetMsg() isServerMessage_Msg {
@@ -1183,12 +1250,13 @@ const file_remotefs_v1_remotefs_proto_rawDesc = "" +
 	"\vReadFileReq\x12\x12\n" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x12\x16\n" +
 	"\x06offset\x18\x02 \x01(\x03R\x06offset\x12\x16\n" +
-	"\x06length\x18\x03 \x01(\x03R\x06length\"h\n" +
+	"\x06length\x18\x03 \x01(\x03R\x06length\"\x80\x01\n" +
 	"\fWriteFileReq\x12\x12\n" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x12\x18\n" +
 	"\acontent\x18\x02 \x01(\fR\acontent\x12\x16\n" +
 	"\x06append\x18\x03 \x01(\bR\x06append\x12\x12\n" +
-	"\x04mode\x18\x04 \x01(\rR\x04mode\"\x1d\n" +
+	"\x04mode\x18\x04 \x01(\rR\x04mode\x12\x16\n" +
+	"\x06offset\x18\x05 \x01(\x03R\x06offset\"\x1d\n" +
 	"\aStatReq\x12\x12\n" +
 	"\x04path\x18\x01 \x01(\tR\x04path\" \n" +
 	"\n" +
@@ -1201,7 +1269,10 @@ const file_remotefs_v1_remotefs_proto_rawDesc = "" +
 	"\trecursive\x18\x02 \x01(\bR\trecursive\"A\n" +
 	"\tRenameReq\x12\x19\n" +
 	"\bold_path\x18\x01 \x01(\tR\aoldPath\x12\x19\n" +
-	"\bnew_path\x18\x02 \x01(\tR\anewPath\"\x91\x03\n" +
+	"\bnew_path\x18\x02 \x01(\tR\anewPath\"5\n" +
+	"\vTruncateReq\x12\x12\n" +
+	"\x04path\x18\x01 \x01(\tR\x04path\x12\x12\n" +
+	"\x04size\x18\x02 \x01(\x03R\x04size\"\xc9\x03\n" +
 	"\vFileRequest\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12.\n" +
@@ -1211,7 +1282,8 @@ const file_remotefs_v1_remotefs_proto_rawDesc = "" +
 	"\blist_dir\x18\x05 \x01(\v2\x17.remotefs.v1.ListDirReqH\x00R\alistDir\x120\n" +
 	"\x06delete\x18\x06 \x01(\v2\x16.remotefs.v1.DeleteReqH\x00R\x06delete\x12-\n" +
 	"\x05mkdir\x18\a \x01(\v2\x15.remotefs.v1.MkdirReqH\x00R\x05mkdir\x120\n" +
-	"\x06rename\x18\b \x01(\v2\x16.remotefs.v1.RenameReqH\x00R\x06renameB\v\n" +
+	"\x06rename\x18\b \x01(\v2\x16.remotefs.v1.RenameReqH\x00R\x06rename\x126\n" +
+	"\btruncate\x18\t \x01(\v2\x18.remotefs.v1.TruncateReqH\x00R\btruncateB\v\n" +
 	"\toperation\"\xe3\x01\n" +
 	"\fFileResponse\x12\x1d\n" +
 	"\n" +
@@ -1257,7 +1329,7 @@ func file_remotefs_v1_remotefs_proto_rawDescGZIP() []byte {
 }
 
 var file_remotefs_v1_remotefs_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_remotefs_v1_remotefs_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
+var file_remotefs_v1_remotefs_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
 var file_remotefs_v1_remotefs_proto_goTypes = []any{
 	(ChangeType)(0),       // 0: remotefs.v1.ChangeType
 	(*FileInfo)(nil),      // 1: remotefs.v1.FileInfo
@@ -1270,11 +1342,12 @@ var file_remotefs_v1_remotefs_proto_goTypes = []any{
 	(*DeleteReq)(nil),     // 8: remotefs.v1.DeleteReq
 	(*MkdirReq)(nil),      // 9: remotefs.v1.MkdirReq
 	(*RenameReq)(nil),     // 10: remotefs.v1.RenameReq
-	(*FileRequest)(nil),   // 11: remotefs.v1.FileRequest
-	(*FileResponse)(nil),  // 12: remotefs.v1.FileResponse
-	(*Heartbeat)(nil),     // 13: remotefs.v1.Heartbeat
-	(*DaemonMessage)(nil), // 14: remotefs.v1.DaemonMessage
-	(*ServerMessage)(nil), // 15: remotefs.v1.ServerMessage
+	(*TruncateReq)(nil),   // 11: remotefs.v1.TruncateReq
+	(*FileRequest)(nil),   // 12: remotefs.v1.FileRequest
+	(*FileResponse)(nil),  // 13: remotefs.v1.FileResponse
+	(*Heartbeat)(nil),     // 14: remotefs.v1.Heartbeat
+	(*DaemonMessage)(nil), // 15: remotefs.v1.DaemonMessage
+	(*ServerMessage)(nil), // 16: remotefs.v1.ServerMessage
 }
 var file_remotefs_v1_remotefs_proto_depIdxs = []int32{
 	1,  // 0: remotefs.v1.FileTree.files:type_name -> remotefs.v1.FileInfo
@@ -1287,21 +1360,22 @@ var file_remotefs_v1_remotefs_proto_depIdxs = []int32{
 	8,  // 7: remotefs.v1.FileRequest.delete:type_name -> remotefs.v1.DeleteReq
 	9,  // 8: remotefs.v1.FileRequest.mkdir:type_name -> remotefs.v1.MkdirReq
 	10, // 9: remotefs.v1.FileRequest.rename:type_name -> remotefs.v1.RenameReq
-	1,  // 10: remotefs.v1.FileResponse.info:type_name -> remotefs.v1.FileInfo
-	2,  // 11: remotefs.v1.FileResponse.entries:type_name -> remotefs.v1.FileTree
-	2,  // 12: remotefs.v1.DaemonMessage.file_tree:type_name -> remotefs.v1.FileTree
-	3,  // 13: remotefs.v1.DaemonMessage.change:type_name -> remotefs.v1.FileChange
-	12, // 14: remotefs.v1.DaemonMessage.response:type_name -> remotefs.v1.FileResponse
-	13, // 15: remotefs.v1.DaemonMessage.heartbeat:type_name -> remotefs.v1.Heartbeat
-	11, // 16: remotefs.v1.ServerMessage.request:type_name -> remotefs.v1.FileRequest
-	13, // 17: remotefs.v1.ServerMessage.heartbeat:type_name -> remotefs.v1.Heartbeat
-	14, // 18: remotefs.v1.RemoteFS.Connect:input_type -> remotefs.v1.DaemonMessage
-	15, // 19: remotefs.v1.RemoteFS.Connect:output_type -> remotefs.v1.ServerMessage
-	19, // [19:20] is the sub-list for method output_type
-	18, // [18:19] is the sub-list for method input_type
-	18, // [18:18] is the sub-list for extension type_name
-	18, // [18:18] is the sub-list for extension extendee
-	0,  // [0:18] is the sub-list for field type_name
+	11, // 10: remotefs.v1.FileRequest.truncate:type_name -> remotefs.v1.TruncateReq
+	1,  // 11: remotefs.v1.FileResponse.info:type_name -> remotefs.v1.FileInfo
+	2,  // 12: remotefs.v1.FileResponse.entries:type_name -> remotefs.v1.FileTree
+	2,  // 13: remotefs.v1.DaemonMessage.file_tree:type_name -> remotefs.v1.FileTree
+	3,  // 14: remotefs.v1.DaemonMessage.change:type_name -> remotefs.v1.FileChange
+	13, // 15: remotefs.v1.DaemonMessage.response:type_name -> remotefs.v1.FileResponse
+	14, // 16: remotefs.v1.DaemonMessage.heartbeat:type_name -> remotefs.v1.Heartbeat
+	12, // 17: remotefs.v1.ServerMessage.request:type_name -> remotefs.v1.FileRequest
+	14, // 18: remotefs.v1.ServerMessage.heartbeat:type_name -> remotefs.v1.Heartbeat
+	15, // 19: remotefs.v1.RemoteFS.Connect:input_type -> remotefs.v1.DaemonMessage
+	16, // 20: remotefs.v1.RemoteFS.Connect:output_type -> remotefs.v1.ServerMessage
+	20, // [20:21] is the sub-list for method output_type
+	19, // [19:20] is the sub-list for method input_type
+	19, // [19:19] is the sub-list for extension type_name
+	19, // [19:19] is the sub-list for extension extendee
+	0,  // [0:19] is the sub-list for field type_name
 }
 
 func init() { file_remotefs_v1_remotefs_proto_init() }
@@ -1309,7 +1383,7 @@ func file_remotefs_v1_remotefs_proto_init() {
 	if File_remotefs_v1_remotefs_proto != nil {
 		return
 	}
-	file_remotefs_v1_remotefs_proto_msgTypes[10].OneofWrappers = []any{
+	file_remotefs_v1_remotefs_proto_msgTypes[11].OneofWrappers = []any{
 		(*FileRequest_Read)(nil),
 		(*FileRequest_Write)(nil),
 		(*FileRequest_Stat)(nil),
@@ -1317,19 +1391,20 @@ func file_remotefs_v1_remotefs_proto_init() {
 		(*FileRequest_Delete)(nil),
 		(*FileRequest_Mkdir)(nil),
 		(*FileRequest_Rename)(nil),
+		(*FileRequest_Truncate)(nil),
 	}
-	file_remotefs_v1_remotefs_proto_msgTypes[11].OneofWrappers = []any{
+	file_remotefs_v1_remotefs_proto_msgTypes[12].OneofWrappers = []any{
 		(*FileResponse_Content)(nil),
 		(*FileResponse_Info)(nil),
 		(*FileResponse_Entries)(nil),
 	}
-	file_remotefs_v1_remotefs_proto_msgTypes[13].OneofWrappers = []any{
+	file_remotefs_v1_remotefs_proto_msgTypes[14].OneofWrappers = []any{
 		(*DaemonMessage_FileTree)(nil),
 		(*DaemonMessage_Change)(nil),
 		(*DaemonMessage_Response)(nil),
 		(*DaemonMessage_Heartbeat)(nil),
 	}
-	file_remotefs_v1_remotefs_proto_msgTypes[14].OneofWrappers = []any{
+	file_remotefs_v1_remotefs_proto_msgTypes[15].OneofWrappers = []any{
 		(*ServerMessage_Request)(nil),
 		(*ServerMessage_Heartbeat)(nil),
 	}
@@ -1339,7 +1414,7 @@ func file_remotefs_v1_remotefs_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_remotefs_v1_remotefs_proto_rawDesc), len(file_remotefs_v1_remotefs_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   15,
+			NumMessages:   16,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

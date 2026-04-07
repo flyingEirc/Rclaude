@@ -13,12 +13,11 @@ import (
 	remotefsv1 "flyingEirc/Rclaude/api/proto/remotefs/v1"
 )
 
-// watchTimeout 是单条事件等待上限；fsnotify 在 macOS/Windows 上偶尔较慢。
 const watchTimeout = 3 * time.Second
 
-// startWatch 在后台 goroutine 里启动 Watch，并返回事件 channel、停止函数和等待 Watch 返回的 wait 函数。
 func startWatch(t *testing.T, opts WatchOptions) (chan *remotefsv1.FileChange, context.CancelFunc, func() error) {
 	t.Helper()
+
 	ch := make(chan *remotefsv1.FileChange, 64)
 	opts.Events = ch
 	ctx, cancel := context.WithCancel(context.Background())
@@ -26,7 +25,6 @@ func startWatch(t *testing.T, opts WatchOptions) (chan *remotefsv1.FileChange, c
 	go func() {
 		errCh <- Watch(ctx, opts)
 	}()
-	// 给 fsnotify 一个很短的初始化窗口，避免首次事件丢失。
 	time.Sleep(50 * time.Millisecond)
 	return ch, cancel, func() error {
 		select {
@@ -38,13 +36,13 @@ func startWatch(t *testing.T, opts WatchOptions) (chan *remotefsv1.FileChange, c
 	}
 }
 
-// waitForMatch 在 timeout 内等待 ch 输出一个满足 predicate 的事件。
 func waitForMatch(
 	t *testing.T,
 	ch <-chan *remotefsv1.FileChange,
 	predicate func(*remotefsv1.FileChange) bool,
 ) *remotefsv1.FileChange {
 	t.Helper()
+
 	deadline := time.After(watchTimeout)
 	for {
 		select {
@@ -53,7 +51,7 @@ func waitForMatch(
 				return ev
 			}
 		case <-deadline:
-			t.Fatalf("timeout waiting for matching FileChange")
+			t.Fatalf("timeout waiting for matching file change")
 			return nil
 		}
 	}
@@ -123,7 +121,6 @@ func TestWatch_ExcludedFile(t *testing.T) {
 		assert.NoError(t, wait())
 	}()
 
-	// 触发一次排除文件的写入与一次普通文件的写入。
 	require.NoError(t, os.WriteFile(filepath.Join(root, "a.log"), []byte("x"), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(root, "a.txt"), []byte("y"), 0o600))
 
@@ -132,14 +129,12 @@ func TestWatch_ExcludedFile(t *testing.T) {
 	})
 	assert.NotNil(t, ev)
 
-	// 再排 drain 500ms，确认没有任何 a.log 事件。
 	timeout := time.After(500 * time.Millisecond)
 loop:
 	for {
 		select {
 		case c := <-ch:
-			assert.NotEqual(t, "a.log", c.GetFile().GetPath(),
-				"excluded file should not produce events")
+			assert.NotEqual(t, "a.log", c.GetFile().GetPath())
 		case <-timeout:
 			break loop
 		}
@@ -156,13 +151,11 @@ func TestWatch_NewSubdir(t *testing.T) {
 
 	subdir := filepath.Join(root, "sub")
 	require.NoError(t, os.Mkdir(subdir, 0o750))
-	// 等待 CREATE 子目录事件被处理并 Add 到 watcher。
 	waitForMatch(t, ch, func(c *remotefsv1.FileChange) bool {
 		return c.GetFile().GetPath() == "sub" &&
 			c.GetType() == remotefsv1.ChangeType_CHANGE_TYPE_CREATE
 	})
 
-	// 再在子目录下建文件，验证新目录确实被监听。
 	require.NoError(t, os.WriteFile(filepath.Join(subdir, "x.txt"), []byte("z"), 0o600))
 	ev := waitForMatch(t, ch, func(c *remotefsv1.FileChange) bool {
 		return c.GetFile().GetPath() == "sub/x.txt"
@@ -178,12 +171,47 @@ func TestWatch_ContextCancel(t *testing.T) {
 	go func() {
 		errCh <- Watch(ctx, WatchOptions{Root: root, Events: ch})
 	}()
+
 	time.Sleep(30 * time.Millisecond)
 	cancel()
+
 	select {
 	case err := <-errCh:
 		assert.NoError(t, err)
 	case <-time.After(watchTimeout):
-		t.Fatal("Watch did not return after context cancel")
+		t.Fatal("watch did not return after context cancel")
 	}
+}
+
+func TestWatch_SuppressesSelfWrite(t *testing.T) {
+	root := t.TempDir()
+	filter := newSelfWriteFilter(2 * time.Second)
+	ch, cancel, wait := startWatch(t, WatchOptions{
+		Root:       root,
+		SelfWrites: filter,
+	})
+	defer func() {
+		cancel()
+		assert.NoError(t, wait())
+	}()
+
+	filter.Remember("x.txt")
+	require.NoError(t, os.WriteFile(filepath.Join(root, "x.txt"), []byte("x"), 0o600))
+
+	timeout := time.After(500 * time.Millisecond)
+loop:
+	for {
+		select {
+		case ev := <-ch:
+			assert.NotEqual(t, "x.txt", ev.GetFile().GetPath())
+		case <-timeout:
+			break loop
+		}
+	}
+
+	require.NoError(t, os.WriteFile(filepath.Join(root, "y.txt"), []byte("y"), 0o600))
+	ev := waitForMatch(t, ch, func(c *remotefsv1.FileChange) bool {
+		return c.GetFile().GetPath() == "y.txt"
+	})
+	assert.NotNil(t, ev)
 }
