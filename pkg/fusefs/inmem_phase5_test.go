@@ -172,6 +172,50 @@ func TestInmem_DisconnectDoesNotBlockFurtherRequests(t *testing.T) {
 
 	start = time.Now()
 	_, err = readChunk(context.Background(), harness.Manager, user.UserID, "a.txt", 0, 5)
-	require.ErrorIs(t, err, ErrSessionFailed)
+	require.ErrorIs(t, err, ErrSessionOffline)
 	assert.Less(t, time.Since(start), time.Second)
+}
+
+func TestInmem_OfflineReadonlyUsesCacheUntilTTLExpires(t *testing.T) {
+	t.Parallel()
+
+	harness := inmemtest.NewHarness(t, inmemtest.HarnessOptions{
+		RequestTimeout:     200 * time.Millisecond,
+		CacheMaxBytes:      64,
+		OfflineReadOnlyTTL: 60 * time.Millisecond,
+	})
+	defer harness.Cleanup()
+
+	user := harness.AddUser(inmemtest.UserOptions{UserID: "user-a"})
+	require.NoError(t, createFile(context.Background(), harness.Manager, user.UserID, "cached.txt"))
+	require.NoError(t, writeChunk(context.Background(), harness.Manager, user.UserID, "cached.txt", 0, []byte("hello")))
+	require.NoError(t, createFile(context.Background(), harness.Manager, user.UserID, "cold.txt"))
+	require.NoError(t, writeChunk(context.Background(), harness.Manager, user.UserID, "cold.txt", 0, []byte("world")))
+
+	_, err := readChunk(context.Background(), harness.Manager, user.UserID, "cached.txt", 0, 5)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, user.ReadRequestCount())
+
+	user.Disconnect()
+	require.Eventually(t, func() bool {
+		return user.Session.IsOfflineReadonly(time.Time{})
+	}, time.Second, 10*time.Millisecond)
+
+	got, err := readChunk(context.Background(), harness.Manager, user.UserID, "cached.txt", 0, 5)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("hello"), got)
+	assert.EqualValues(t, 1, user.ReadRequestCount())
+
+	_, err = readChunk(context.Background(), harness.Manager, user.UserID, "cold.txt", 0, 5)
+	require.ErrorIs(t, err, ErrSessionOffline)
+	assert.EqualValues(t, 1, user.ReadRequestCount())
+
+	require.Eventually(t, func() bool {
+		_, ok := harness.Manager.Get(user.UserID)
+		return !ok
+	}, time.Second, 10*time.Millisecond)
+
+	_, err = readChunk(context.Background(), harness.Manager, user.UserID, "cached.txt", 0, 5)
+	require.ErrorIs(t, err, ErrSessionOffline)
+	assert.Empty(t, harness.Manager.UserIDs())
 }

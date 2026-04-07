@@ -135,8 +135,8 @@ func TestServiceConnectReplacesPreviousSession(t *testing.T) {
 	})
 
 	require.Eventually(t, func() bool {
-		current, ok := manager.Get("user-1")
-		return ok && current != first
+		current, exists := manager.Get("user-1")
+		return exists && current != first
 	}, time.Second, 10*time.Millisecond)
 
 	_, err = first.Request(context.Background(), &remotefsv1.FileRequest{
@@ -150,5 +150,97 @@ func TestServiceConnectReplacesPreviousSession(t *testing.T) {
 	stream1.CloseRecv()
 	stream2.CloseRecv()
 	require.NoError(t, <-errCh1)
+	require.NoError(t, <-errCh2)
+}
+
+func TestServiceConnectRetainsOfflineReadonlyWithinTTL(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(ManagerOptions{OfflineReadOnlyTTL: time.Minute})
+	svc, err := NewService(manager)
+	require.NoError(t, err)
+
+	ctx := auth.WithUserID(context.Background(), "user-1")
+	stream := newMockConnectStream(ctx)
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- svc.Connect(stream)
+	}()
+
+	stream.PushRecv(&remotefsv1.DaemonMessage{
+		Msg: &remotefsv1.DaemonMessage_FileTree{FileTree: &remotefsv1.FileTree{}},
+	})
+
+	require.Eventually(t, func() bool {
+		_, ok := manager.Get("user-1")
+		return ok
+	}, time.Second, 10*time.Millisecond)
+
+	current, ok := manager.Get("user-1")
+	require.True(t, ok)
+
+	stream.CloseRecv()
+	require.NoError(t, <-errCh)
+
+	got, ok := manager.Get("user-1")
+	require.True(t, ok)
+	assert.Same(t, current, got)
+	assert.True(t, got.IsOfflineReadonly(time.Time{}))
+}
+
+func TestServiceConnectReplacesOfflineReadonlySession(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(ManagerOptions{OfflineReadOnlyTTL: time.Minute})
+	svc, err := NewService(manager)
+	require.NoError(t, err)
+
+	ctx1 := auth.WithUserID(context.Background(), "user-1")
+	stream1 := newMockConnectStream(ctx1)
+	errCh1 := make(chan error, 1)
+	go func() {
+		errCh1 <- svc.Connect(stream1)
+	}()
+	stream1.PushRecv(&remotefsv1.DaemonMessage{
+		Msg: &remotefsv1.DaemonMessage_FileTree{FileTree: &remotefsv1.FileTree{}},
+	})
+
+	require.Eventually(t, func() bool {
+		_, ok := manager.Get("user-1")
+		return ok
+	}, time.Second, 10*time.Millisecond)
+
+	first, ok := manager.Get("user-1")
+	require.True(t, ok)
+
+	stream1.CloseRecv()
+	require.NoError(t, <-errCh1)
+
+	offline, ok := manager.Get("user-1")
+	require.True(t, ok)
+	assert.Same(t, first, offline)
+	assert.True(t, offline.IsOfflineReadonly(time.Time{}))
+
+	ctx2 := auth.WithUserID(context.Background(), "user-1")
+	stream2 := newMockConnectStream(ctx2)
+	errCh2 := make(chan error, 1)
+	go func() {
+		errCh2 <- svc.Connect(stream2)
+	}()
+	stream2.PushRecv(&remotefsv1.DaemonMessage{
+		Msg: &remotefsv1.DaemonMessage_FileTree{FileTree: &remotefsv1.FileTree{}},
+	})
+
+	require.Eventually(t, func() bool {
+		current, exists := manager.Get("user-1")
+		return exists && current != first
+	}, time.Second, 10*time.Millisecond)
+
+	current, ok := manager.Get("user-1")
+	require.True(t, ok)
+	assert.NotSame(t, first, current)
+	assert.False(t, current.IsOfflineReadonly(time.Time{}))
+
+	stream2.CloseRecv()
 	require.NoError(t, <-errCh2)
 }

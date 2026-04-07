@@ -194,6 +194,86 @@ func TestReadChunkCacheDisabledFallsBackToRangeRead(t *testing.T) {
 	assert.Equal(t, []byte("ll"), got)
 }
 
+func TestLookupAndListInfosRemainAvailableOffline(t *testing.T) {
+	t.Parallel()
+
+	manager, current, cleanup := startViewSession(t, []*remotefsv1.FileInfo{
+		{Path: "dir", IsDir: true, Mode: 0o755},
+		{Path: "dir/file.txt", Size: 5, Mode: 0o644},
+	}, 0, nil)
+	defer cleanup()
+
+	require.True(t, current.RetainOffline(time.Now().Add(time.Minute)))
+
+	info, err := lookupInfo(manager, "user-1", "dir/file.txt")
+	require.NoError(t, err)
+	assert.Equal(t, "dir/file.txt", info.GetPath())
+
+	entries, err := listInfos(manager, "user-1", "dir")
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "dir/file.txt", entries[0].GetPath())
+}
+
+func TestReadChunkOfflineUsesCachedContent(t *testing.T) {
+	t.Parallel()
+
+	var calls int
+	manager, current, cleanup := startViewSessionWithCache(t, []*remotefsv1.FileInfo{
+		{Path: "file.txt", Size: 5, ModTime: 1, Mode: 0o644},
+	}, 0, 64, func(req *remotefsv1.FileRequest) *remotefsv1.FileResponse {
+		calls++
+		return &remotefsv1.FileResponse{
+			Success: true,
+			Result:  &remotefsv1.FileResponse_Content{Content: []byte("hello")},
+		}
+	})
+	defer cleanup()
+
+	_, err := readChunk(context.Background(), manager, "user-1", "file.txt", 0, 5)
+	require.NoError(t, err)
+	require.True(t, current.RetainOffline(time.Now().Add(time.Minute)))
+
+	got, err := readChunk(context.Background(), manager, "user-1", "file.txt", 1, 4)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("ello"), got)
+	assert.Equal(t, 1, calls)
+}
+
+func TestReadChunkOfflineCacheMissFails(t *testing.T) {
+	t.Parallel()
+
+	manager, current, cleanup := startViewSessionWithCache(t, []*remotefsv1.FileInfo{
+		{Path: "file.txt", Size: 5, ModTime: 1, Mode: 0o644},
+	}, 0, 64, nil)
+	defer cleanup()
+
+	require.True(t, current.RetainOffline(time.Now().Add(time.Minute)))
+
+	_, err := readChunk(context.Background(), manager, "user-1", "file.txt", 0, 5)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrSessionOffline)
+}
+
+func TestOfflineWriteHelpersReturnSessionOffline(t *testing.T) {
+	t.Parallel()
+
+	manager, current, cleanup := startViewSession(t, []*remotefsv1.FileInfo{
+		{Path: "dir", IsDir: true, Mode: 0o755},
+		{Path: "a.txt", Size: 5, Mode: 0o644},
+	}, 0, nil)
+	defer cleanup()
+
+	require.True(t, current.RetainOffline(time.Now().Add(time.Minute)))
+
+	assert.ErrorIs(t, createFile(context.Background(), manager, "user-1", "new.txt"), ErrSessionOffline)
+	assert.ErrorIs(t, writeChunk(context.Background(), manager, "user-1", "a.txt", 0, []byte("x")), ErrSessionOffline)
+	assert.ErrorIs(t, mkdirAt(context.Background(), manager, "user-1", "newdir", false), ErrSessionOffline)
+	assert.ErrorIs(t, removePath(context.Background(), manager, "user-1", "a.txt"), ErrSessionOffline)
+	assert.ErrorIs(t, renamePath(context.Background(), manager, "user-1", "a.txt", "b.txt"), ErrSessionOffline)
+	assert.ErrorIs(t, truncatePath(context.Background(), manager, "user-1", "a.txt", 0), ErrSessionOffline)
+}
+
 func TestReadChunkMissingPath(t *testing.T) {
 	t.Parallel()
 

@@ -125,6 +125,9 @@ func readChunk(ctx context.Context, manager *session.Manager, userID, relPath st
 	if data, ok := current.GetCachedContent(relPath, info); ok {
 		return sliceReadContent(data, off, size), nil
 	}
+	if current.IsOfflineReadonly(time.Time{}) {
+		return nil, ErrSessionOffline
+	}
 
 	if shouldUseContentCache(manager, info) {
 		data, err := requestRead(ctx, manager, current, relPath, 0, 0)
@@ -257,6 +260,9 @@ func requestFileOp(
 	if err != nil {
 		return nil, nil, err
 	}
+	if current.IsOfflineReadonly(time.Time{}) {
+		return nil, nil, ErrSessionOffline
+	}
 
 	ctx, cancel := withRequestTimeout(ctx, manager)
 	defer cancel()
@@ -293,6 +299,10 @@ func requestRead(
 	off int64,
 	length int64,
 ) ([]byte, error) {
+	if current != nil && current.IsOfflineReadonly(time.Time{}) {
+		return nil, ErrSessionOffline
+	}
+
 	ctx, cancel := withRequestTimeout(ctx, manager)
 	defer cancel()
 
@@ -364,6 +374,8 @@ func classifyRequestErr(reqErr error, respErr string) error {
 			return ErrRequestTimeout
 		case errors.Is(reqErr, context.Canceled):
 			return context.Canceled
+		case errors.Is(reqErr, session.ErrSessionOffline):
+			return ErrSessionOffline
 		default:
 			return fmt.Errorf("%w: %w", ErrSessionFailed, reqErr)
 		}

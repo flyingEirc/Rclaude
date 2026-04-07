@@ -6,6 +6,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	remotefsv1 "flyingEirc/Rclaude/api/proto/remotefs/v1"
 )
 
 func TestManagerRegisterAndUserIDs(t *testing.T) {
@@ -75,4 +77,43 @@ func TestManagerNewSessionCarriesCacheConfig(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, []byte("a"), got)
 	assert.EqualValues(t, 64, manager.CacheMaxBytes())
+}
+
+func TestManagerHandleDisconnectRetainsOfflineReadonly(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(ManagerOptions{OfflineReadOnlyTTL: time.Minute})
+	current := NewSession("user-1")
+	require.NoError(t, current.Bootstrap(&remotefsv1.DaemonMessage{
+		Msg: &remotefsv1.DaemonMessage_FileTree{FileTree: &remotefsv1.FileTree{}},
+	}))
+	_, err := manager.Register(current)
+	require.NoError(t, err)
+
+	current.closeWithError(nil)
+	manager.HandleDisconnect(current, nil)
+
+	got, ok := manager.Get("user-1")
+	require.True(t, ok)
+	assert.Same(t, current, got)
+	assert.True(t, got.IsOfflineReadonly(time.Time{}))
+}
+
+func TestManagerGetPrunesExpiredOfflineSession(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager()
+	current := NewSession("user-1")
+	require.NoError(t, current.Bootstrap(&remotefsv1.DaemonMessage{
+		Msg: &remotefsv1.DaemonMessage_FileTree{FileTree: &remotefsv1.FileTree{}},
+	}))
+	_, err := manager.Register(current)
+	require.NoError(t, err)
+
+	require.True(t, current.RetainOffline(time.Now().Add(-time.Millisecond)))
+
+	got, ok := manager.Get("user-1")
+	assert.Nil(t, got)
+	assert.False(t, ok)
+	assert.Empty(t, manager.UserIDs())
 }

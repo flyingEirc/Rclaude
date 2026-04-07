@@ -260,6 +260,23 @@ func TestSessionApplyChangeInvalidatesContent(t *testing.T) {
 	assert.False(t, ok)
 }
 
+func TestSessionRequestFailsWhenOfflineReadonly(t *testing.T) {
+	t.Parallel()
+
+	s := NewSession("user-1")
+	require.True(t, s.RetainOffline(time.Now().Add(time.Minute)))
+
+	_, err := s.Request(context.Background(), &remotefsv1.FileRequest{
+		Operation: &remotefsv1.FileRequest_Stat{
+			Stat: &remotefsv1.StatReq{Path: "a.txt"},
+		},
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrSessionOffline)
+	assert.True(t, s.IsOfflineReadonly(time.Time{}))
+	assert.False(t, s.IsExpired(time.Time{}))
+}
+
 func newCachedSession(t *testing.T, files []*remotefsv1.FileInfo) *Session {
 	t.Helper()
 

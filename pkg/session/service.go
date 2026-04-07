@@ -56,7 +56,7 @@ func (s *Service) Connect(stream remotefsv1.RemoteFS_ConnectServer) error {
 	if prev != nil {
 		prev.closeWithError(ErrSessionReplaced)
 	}
-	defer s.manager.Remove(current)
-
-	return current.Serve(stream.Context(), stream)
+	serveErr := current.Serve(stream.Context(), stream)
+	s.manager.HandleDisconnect(current, serveErr)
+	return serveErr
 }

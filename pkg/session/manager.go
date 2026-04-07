@@ -13,15 +13,17 @@ var (
 )
 
 type ManagerOptions struct {
-	RequestTimeout time.Duration
-	CacheMaxBytes  int64
+	RequestTimeout     time.Duration
+	CacheMaxBytes      int64
+	OfflineReadOnlyTTL time.Duration
 }
 
 type Manager struct {
-	mu             sync.RWMutex
-	sessions       map[string]*Session
-	requestTimeout time.Duration
-	cacheMaxBytes  int64
+	mu                 sync.RWMutex
+	sessions           map[string]*Session
+	requestTimeout     time.Duration
+	cacheMaxBytes      int64
+	offlineReadOnlyTTL time.Duration
 }
 
 func NewManager(opts ...ManagerOptions) *Manager {
@@ -31,9 +33,10 @@ func NewManager(opts ...ManagerOptions) *Manager {
 	}
 
 	return &Manager{
-		sessions:       make(map[string]*Session),
-		requestTimeout: cfg.RequestTimeout,
-		cacheMaxBytes:  cfg.CacheMaxBytes,
+		sessions:           make(map[string]*Session),
+		requestTimeout:     cfg.RequestTimeout,
+		cacheMaxBytes:      cfg.CacheMaxBytes,
+		offlineReadOnlyTTL: cfg.OfflineReadOnlyTTL,
 	}
 }
 
@@ -56,6 +59,7 @@ func (m *Manager) Register(s *Session) (*Session, error) {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.pruneExpiredLocked(time.Now())
 
 	prev := m.sessions[s.UserID()]
 	m.sessions[s.UserID()] = s
@@ -63,9 +67,10 @@ func (m *Manager) Register(s *Session) (*Session, error) {
 }
 
 func (m *Manager) Get(userID string) (*Session, bool) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
+	m.pruneExpiredLocked(time.Now())
 	s, ok := m.sessions[userID]
 	return s, ok
 }
@@ -84,8 +89,10 @@ func (m *Manager) Remove(s *Session) {
 }
 
 func (m *Manager) UserIDs() []string {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.pruneExpiredLocked(time.Now())
 
 	out := make([]string, 0, len(m.sessions))
 	for userID := range m.sessions {
@@ -93,6 +100,27 @@ func (m *Manager) UserIDs() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func (m *Manager) HandleDisconnect(current *Session, serveErr error) {
+	if m == nil || current == nil || current.UserID() == "" {
+		return
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	live, ok := m.sessions[current.UserID()]
+	if !ok || live != current {
+		return
+	}
+	if errors.Is(serveErr, ErrSessionReplaced) || m.offlineReadOnlyTTL <= 0 {
+		delete(m.sessions, current.UserID())
+		return
+	}
+
+	current.RetainOffline(time.Now().Add(m.offlineReadOnlyTTL))
+	m.pruneExpiredLocked(time.Now())
 }
 
 func (m *Manager) RequestTimeout() time.Duration {
@@ -107,4 +135,12 @@ func (m *Manager) CacheMaxBytes() int64 {
 		return 0
 	}
 	return m.cacheMaxBytes
+}
+
+func (m *Manager) pruneExpiredLocked(now time.Time) {
+	for userID, current := range m.sessions {
+		if current != nil && current.IsExpired(now) {
+			delete(m.sessions, userID)
+		}
+	}
 }

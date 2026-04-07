@@ -12,6 +12,7 @@
 - [`202604071253-phase4a-write-ops/`](/e:/Rclaude/docs/exec-plan/completed/202604071253-phase4a-write-ops/)
 - [`202604071605-phase4b-cache/`](/e:/Rclaude/docs/exec-plan/completed/202604071605-phase4b-cache/)
 - [`202604070914-phase5-integration-test/`](/e:/Rclaude/docs/exec-plan/completed/202604070914-phase5-integration-test/)
+- [`202604071013-phase6a-offline-readonly/`](/root/Rclaude/docs/exec-plan/completed/202604071013-phase6a-offline-readonly/)
 
 ## 一、实现架构
 
@@ -39,6 +40,7 @@ FUSE 是当前主路径，不再作为后续可选升级项。
 - Phase 4a：写透与写操作主链路
 - Phase 4b：服务端整文件内容缓存与失效
 - Phase 5：跨平台 `inmem` 集成测试、Linux 真 FUSE 自动化冒烟与手动脚本入口
+- Phase 6A：daemon 断线后的 TTL 限定离线只读降级
 
 ## 二、角色边界
 
@@ -140,7 +142,7 @@ E:\Rclaude\
 - 内容缓存用于降低重复 `Read` 的网络往返
 - 缓存失效由 Daemon 变更事件驱动
 - 小文件预取用于优化典型的 `ls` 后连续 `cat` 场景
-- 断线期间应支持基于缓存的只读降级策略
+- 断线期间已支持基于缓存的 TTL 限定只读降级策略
 
 ## 七、测试基线
 

@@ -11,9 +11,10 @@ import (
 )
 
 const (
-	envPrefix             = "RCLAUDE"
-	DefaultRequestTimeout = 10 * time.Second
-	DefaultSelfWriteTTL   = 2 * time.Second
+	envPrefix                 = "RCLAUDE"
+	DefaultRequestTimeout     = 10 * time.Second
+	DefaultSelfWriteTTL       = 2 * time.Second
+	DefaultOfflineReadOnlyTTL = 5 * time.Minute
 )
 
 var (
@@ -59,12 +60,13 @@ type CacheConfig struct {
 }
 
 type ServerConfig struct {
-	Listen         string        `mapstructure:"listen"`
-	Auth           AuthConfig    `mapstructure:"auth"`
-	FUSE           FUSEConfig    `mapstructure:"fuse"`
-	Cache          CacheConfig   `mapstructure:"cache"`
-	Log            LogConfig     `mapstructure:"log"`
-	RequestTimeout time.Duration `mapstructure:"request_timeout"`
+	Listen             string        `mapstructure:"listen"`
+	Auth               AuthConfig    `mapstructure:"auth"`
+	FUSE               FUSEConfig    `mapstructure:"fuse"`
+	Cache              CacheConfig   `mapstructure:"cache"`
+	Log                LogConfig     `mapstructure:"log"`
+	RequestTimeout     time.Duration `mapstructure:"request_timeout"`
+	OfflineReadOnlyTTL time.Duration `mapstructure:"offline_readonly_ttl"`
 }
 
 func LoadDaemon(path string) (*DaemonConfig, error) {
@@ -143,6 +145,7 @@ func defaultDaemonConfig() DaemonConfig {
 
 func defaultServerConfig() ServerConfig {
 	return ServerConfig{
-		RequestTimeout: DefaultRequestTimeout,
+		RequestTimeout:     DefaultRequestTimeout,
+		OfflineReadOnlyTTL: DefaultOfflineReadOnlyTTL,
 	}
 }

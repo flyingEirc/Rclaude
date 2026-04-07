@@ -25,8 +25,9 @@ const (
 )
 
 type HarnessOptions struct {
-	RequestTimeout time.Duration
-	CacheMaxBytes  int64
+	RequestTimeout     time.Duration
+	CacheMaxBytes      int64
+	OfflineReadOnlyTTL time.Duration
 }
 
 type UserOptions struct {
@@ -129,8 +130,9 @@ func NewHarness(t testing.TB, opts ...HarnessOptions) *Harness {
 	return &Harness{
 		t: t,
 		Manager: session.NewManager(session.ManagerOptions{
-			RequestTimeout: cfg.RequestTimeout,
-			CacheMaxBytes:  cfg.CacheMaxBytes,
+			RequestTimeout:     cfg.RequestTimeout,
+			CacheMaxBytes:      cfg.CacheMaxBytes,
+			OfflineReadOnlyTTL: cfg.OfflineReadOnlyTTL,
 		}),
 		users: make(map[string]*UserHandle),
 	}
@@ -160,7 +162,9 @@ func (h *Harness) AddUser(opts UserOptions) *UserHandle {
 	stream := testutil.NewMockConnectStream(ctx)
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- current.Serve(ctx, stream)
+		err := current.Serve(ctx, stream)
+		h.Manager.HandleDisconnect(current, err)
+		errCh <- err
 	}()
 
 	user := &UserHandle{

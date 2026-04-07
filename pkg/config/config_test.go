@@ -110,6 +110,7 @@ log:
 	assert.Equal(t, absMountpoint(), cfg.FUSE.Mountpoint)
 	assert.Equal(t, int64(268435456), cfg.Cache.MaxBytes)
 	assert.Equal(t, "warn", cfg.Log.Level)
+	assert.Equal(t, config.DefaultOfflineReadOnlyTTL, cfg.OfflineReadOnlyTTL)
 }
 
 func TestLoadServerMissingListen(t *testing.T) {
@@ -154,6 +155,22 @@ fuse:
 	_, err := config.LoadServer(path)
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, config.ErrMountpointNotAbs))
+}
+
+func TestLoadServerExplicitOfflineReadonlyTTL(t *testing.T) {
+	t.Parallel()
+	body := `
+listen: ":9000"
+auth:
+  tokens: { "t": "u" }
+fuse:
+  mountpoint: ` + escapeYAML(absMountpoint()) + `
+offline_readonly_ttl: 0s
+`
+	path := writeYAML(t, "server.yaml", body)
+	cfg, err := config.LoadServer(path)
+	require.NoError(t, err)
+	assert.Zero(t, cfg.OfflineReadOnlyTTL)
 }
 
 func TestLoadDaemonEnvOverride(t *testing.T) {

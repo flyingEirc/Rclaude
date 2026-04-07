@@ -108,8 +108,9 @@ func prepareRuntime(
 	}
 
 	manager := session.NewManager(session.ManagerOptions{
-		RequestTimeout: cfg.RequestTimeout,
-		CacheMaxBytes:  cfg.Cache.MaxBytes,
+		RequestTimeout:     cfg.RequestTimeout,
+		CacheMaxBytes:      cfg.Cache.MaxBytes,
+		OfflineReadOnlyTTL: cfg.OfflineReadOnlyTTL,
 	})
 	service, err := session.NewService(manager)
 	if err != nil {
