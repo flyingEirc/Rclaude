@@ -2,6 +2,7 @@ package fusefs
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 
 	remotefsv1 "flyingEirc/Rclaude/api/proto/remotefs/v1"
 	"flyingEirc/Rclaude/internal/testutil"
+	"flyingEirc/Rclaude/pkg/config"
 	"flyingEirc/Rclaude/pkg/session"
 )
 
@@ -192,6 +194,231 @@ func TestReadChunkCacheDisabledFallsBackToRangeRead(t *testing.T) {
 	got, err := readChunk(context.Background(), manager, "user-1", "file.txt", 2, 2)
 	require.NoError(t, err)
 	assert.Equal(t, []byte("ll"), got)
+}
+
+func TestLookupAndListInfosRemainAvailableOffline(t *testing.T) {
+	t.Parallel()
+
+	manager, current, cleanup := startViewSession(t, []*remotefsv1.FileInfo{
+		{Path: "dir", IsDir: true, Mode: 0o755},
+		{Path: "dir/file.txt", Size: 5, Mode: 0o644},
+	}, 0, nil)
+	defer cleanup()
+
+	require.True(t, current.RetainOffline(time.Now().Add(time.Minute)))
+
+	info, err := lookupInfo(manager, "user-1", "dir/file.txt")
+	require.NoError(t, err)
+	assert.Equal(t, "dir/file.txt", info.GetPath())
+
+	entries, err := listInfos(manager, "user-1", "dir")
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "dir/file.txt", entries[0].GetPath())
+}
+
+func TestPrefetchCandidatesFilterCachedLargeAndLimitedFiles(t *testing.T) {
+	t.Parallel()
+
+	manager, current, cleanup := startViewSessionWithManagerOptions(t, []*remotefsv1.FileInfo{
+		{Path: "a.txt", Size: 4, ModTime: 1, Mode: 0o644},
+		{Path: "b.txt", Size: 4, ModTime: 1, Mode: 0o644},
+		{Path: "c.txt", Size: 12, ModTime: 1, Mode: 0o644},
+		{Path: "dir", IsDir: true, Mode: 0o755},
+	}, session.ManagerOptions{
+		CacheMaxBytes:          64,
+		PrefetchEnabled:        true,
+		PrefetchMaxFileBytes:   8,
+		PrefetchMaxFilesPerDir: 1,
+	}, nil)
+	defer cleanup()
+
+	info, ok := current.Lookup("a.txt")
+	require.True(t, ok)
+	require.True(t, current.PutCachedContent("a.txt", info, []byte("aaaa")))
+
+	infos, err := listInfos(manager, "user-1", "")
+	require.NoError(t, err)
+
+	candidates := prefetchCandidates(manager, current, infos)
+	require.Len(t, candidates, 1)
+	assert.Equal(t, "b.txt", candidates[0].GetPath())
+}
+
+func TestStartPrefetchCachesSmallFilesAsynchronously(t *testing.T) {
+	t.Parallel()
+
+	release := make(chan struct{})
+	var calls atomic.Int64
+
+	manager, current, cleanup := startViewSessionWithManagerOptions(t, []*remotefsv1.FileInfo{
+		{Path: "file.txt", Size: 5, ModTime: 1, Mode: 0o644},
+	}, session.ManagerOptions{
+		CacheMaxBytes:          64,
+		PrefetchEnabled:        true,
+		PrefetchMaxFileBytes:   16,
+		PrefetchMaxFilesPerDir: 4,
+	}, func(req *remotefsv1.FileRequest) *remotefsv1.FileResponse {
+		read := req.GetRead()
+		require.NotNil(t, read)
+		calls.Add(1)
+		<-release
+		return &remotefsv1.FileResponse{
+			Success: true,
+			Result:  &remotefsv1.FileResponse_Content{Content: []byte("hello")},
+		}
+	})
+	defer cleanup()
+
+	infos, err := listInfos(manager, "user-1", "")
+	require.NoError(t, err)
+
+	start := time.Now()
+	startPrefetch(context.Background(), manager, "user-1", infos)
+	assert.Less(t, time.Since(start), 50*time.Millisecond)
+
+	close(release)
+	require.Eventually(t, func() bool {
+		info, ok := current.Lookup("file.txt")
+		if !ok {
+			return false
+		}
+		_, ok = current.GetCachedContent("file.txt", info)
+		return ok
+	}, time.Second, 10*time.Millisecond)
+
+	got, err := readChunk(context.Background(), manager, "user-1", "file.txt", 0, 5)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("hello"), got)
+	assert.EqualValues(t, 1, calls.Load())
+}
+
+func TestStartPrefetchDeduplicatesConcurrentRequests(t *testing.T) {
+	t.Parallel()
+
+	release := make(chan struct{})
+	var calls atomic.Int64
+
+	manager, _, cleanup := startViewSessionWithManagerOptions(t, []*remotefsv1.FileInfo{
+		{Path: "file.txt", Size: 5, ModTime: 1, Mode: 0o644},
+	}, session.ManagerOptions{
+		CacheMaxBytes:          64,
+		PrefetchEnabled:        true,
+		PrefetchMaxFileBytes:   16,
+		PrefetchMaxFilesPerDir: 4,
+	}, func(req *remotefsv1.FileRequest) *remotefsv1.FileResponse {
+		require.NotNil(t, req.GetRead())
+		calls.Add(1)
+		<-release
+		return &remotefsv1.FileResponse{
+			Success: true,
+			Result:  &remotefsv1.FileResponse_Content{Content: []byte("hello")},
+		}
+	})
+	defer cleanup()
+
+	infos, err := listInfos(manager, "user-1", "")
+	require.NoError(t, err)
+
+	startPrefetch(context.Background(), manager, "user-1", infos)
+	startPrefetch(context.Background(), manager, "user-1", infos)
+
+	require.Eventually(t, func() bool {
+		return calls.Load() == 1
+	}, time.Second, 10*time.Millisecond)
+
+	close(release)
+	time.Sleep(50 * time.Millisecond)
+	assert.EqualValues(t, 1, calls.Load())
+}
+
+func TestStartPrefetchSkipsOfflineSession(t *testing.T) {
+	t.Parallel()
+
+	var calls atomic.Int64
+	manager, current, cleanup := startViewSessionWithManagerOptions(t, []*remotefsv1.FileInfo{
+		{Path: "file.txt", Size: 5, ModTime: 1, Mode: 0o644},
+	}, session.ManagerOptions{
+		CacheMaxBytes:          64,
+		PrefetchEnabled:        true,
+		PrefetchMaxFileBytes:   16,
+		PrefetchMaxFilesPerDir: 4,
+	}, func(req *remotefsv1.FileRequest) *remotefsv1.FileResponse {
+		calls.Add(1)
+		return &remotefsv1.FileResponse{
+			Success: true,
+			Result:  &remotefsv1.FileResponse_Content{Content: []byte("hello")},
+		}
+	})
+	defer cleanup()
+
+	require.True(t, current.RetainOffline(time.Now().Add(time.Minute)))
+
+	infos, err := listInfos(manager, "user-1", "")
+	require.NoError(t, err)
+	startPrefetch(context.Background(), manager, "user-1", infos)
+
+	time.Sleep(50 * time.Millisecond)
+	assert.Zero(t, calls.Load())
+}
+
+func TestReadChunkOfflineUsesCachedContent(t *testing.T) {
+	t.Parallel()
+
+	var calls int
+	manager, current, cleanup := startViewSessionWithCache(t, []*remotefsv1.FileInfo{
+		{Path: "file.txt", Size: 5, ModTime: 1, Mode: 0o644},
+	}, 0, 64, func(req *remotefsv1.FileRequest) *remotefsv1.FileResponse {
+		calls++
+		return &remotefsv1.FileResponse{
+			Success: true,
+			Result:  &remotefsv1.FileResponse_Content{Content: []byte("hello")},
+		}
+	})
+	defer cleanup()
+
+	_, err := readChunk(context.Background(), manager, "user-1", "file.txt", 0, 5)
+	require.NoError(t, err)
+	require.True(t, current.RetainOffline(time.Now().Add(time.Minute)))
+
+	got, err := readChunk(context.Background(), manager, "user-1", "file.txt", 1, 4)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("ello"), got)
+	assert.Equal(t, 1, calls)
+}
+
+func TestReadChunkOfflineCacheMissFails(t *testing.T) {
+	t.Parallel()
+
+	manager, current, cleanup := startViewSessionWithCache(t, []*remotefsv1.FileInfo{
+		{Path: "file.txt", Size: 5, ModTime: 1, Mode: 0o644},
+	}, 0, 64, nil)
+	defer cleanup()
+
+	require.True(t, current.RetainOffline(time.Now().Add(time.Minute)))
+
+	_, err := readChunk(context.Background(), manager, "user-1", "file.txt", 0, 5)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrSessionOffline)
+}
+
+func TestOfflineWriteHelpersReturnSessionOffline(t *testing.T) {
+	t.Parallel()
+
+	manager, current, cleanup := startViewSession(t, []*remotefsv1.FileInfo{
+		{Path: "dir", IsDir: true, Mode: 0o755},
+		{Path: "a.txt", Size: 5, Mode: 0o644},
+	}, 0, nil)
+	defer cleanup()
+
+	require.True(t, current.RetainOffline(time.Now().Add(time.Minute)))
+
+	assert.ErrorIs(t, createFile(context.Background(), manager, "user-1", "new.txt"), ErrSessionOffline)
+	assert.ErrorIs(t, writeChunk(context.Background(), manager, "user-1", "a.txt", 0, []byte("x")), ErrSessionOffline)
+	assert.ErrorIs(t, mkdirAt(context.Background(), manager, "user-1", "newdir", false), ErrSessionOffline)
+	assert.ErrorIs(t, removePath(context.Background(), manager, "user-1", "a.txt"), ErrSessionOffline)
+	assert.ErrorIs(t, renamePath(context.Background(), manager, "user-1", "a.txt", "b.txt"), ErrSessionOffline)
+	assert.ErrorIs(t, truncatePath(context.Background(), manager, "user-1", "a.txt", 0), ErrSessionOffline)
 }
 
 func TestReadChunkMissingPath(t *testing.T) {
@@ -391,14 +618,26 @@ func startViewSessionWithCache(
 	cacheMaxBytes int64,
 	responder func(*remotefsv1.FileRequest) *remotefsv1.FileResponse,
 ) (*session.Manager, *session.Session, func()) {
+	return startViewSessionWithManagerOptions(t, files, session.ManagerOptions{
+		RequestTimeout:         timeout,
+		CacheMaxBytes:          cacheMaxBytes,
+		PrefetchEnabled:        config.DefaultPrefetchEnabled,
+		PrefetchMaxFileBytes:   config.DefaultPrefetchMaxFileBytes,
+		PrefetchMaxFilesPerDir: config.DefaultPrefetchMaxFilesPerDir,
+	}, responder)
+}
+
+func startViewSessionWithManagerOptions(
+	t *testing.T,
+	files []*remotefsv1.FileInfo,
+	managerOpts session.ManagerOptions,
+	responder func(*remotefsv1.FileRequest) *remotefsv1.FileResponse,
+) (*session.Manager, *session.Session, func()) {
 	t.Helper()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	stream := testutil.NewMockConnectStream(ctx)
-	manager := session.NewManager(session.ManagerOptions{
-		RequestTimeout: timeout,
-		CacheMaxBytes:  cacheMaxBytes,
-	})
+	manager := session.NewManager(managerOpts)
 	current := manager.NewSession("user-1")
 	require.NoError(t, current.Bootstrap(&remotefsv1.DaemonMessage{
 		Msg: &remotefsv1.DaemonMessage_FileTree{

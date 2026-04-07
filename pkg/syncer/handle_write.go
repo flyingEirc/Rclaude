@@ -1,6 +1,7 @@
 package syncer
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -51,6 +52,69 @@ func successNoResult(reqID string) *remotefsv1.FileResponse {
 	}
 }
 
+func resolveMutatingPath(
+	reqID string,
+	op string,
+	relPath string,
+	opts HandleOptions,
+	resolveOpts pathResolutionOptions,
+) (string, *remotefsv1.FileResponse) {
+	abs, err := resolveWorkspacePath(opts.Root, relPath)
+	if err != nil {
+		return "", errResponse(reqID, fmt.Sprintf("syncer: unsafe path: %v", err))
+	}
+	blocked, err := blocksSensitivePath(opts.Root, relPath, opts.SensitiveFilter, resolveOpts)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return "", errResponse(reqID, fmt.Sprintf("syncer: %s %q: %v", op, relPath, err))
+	}
+	if blocked {
+		return "", errResponse(reqID, formatErr(op, relPath, fs.ErrPermission))
+	}
+	return abs, nil
+}
+
+func resolveRenamePaths(
+	reqID string,
+	r *remotefsv1.RenameReq,
+	opts HandleOptions,
+) (string, string, *remotefsv1.FileResponse) {
+	oldAbs, resp := resolveMutatingPath(reqID, "rename", r.GetOldPath(), opts, pathResolutionOptions{})
+	if resp != nil {
+		return "", "", resp
+	}
+	newAbs, resp := resolveMutatingPath(reqID, "rename", r.GetNewPath(), opts, pathResolutionOptions{
+		allowMissingLeaf: true,
+	})
+	if resp != nil {
+		return "", "", resp
+	}
+
+	hasSensitiveChildren, err := hasSensitiveDescendant(opts.Root, r.GetOldPath(), opts.SensitiveFilter)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return "", "", errResponse(reqID, fmt.Sprintf("syncer: rename %q: %v", r.GetOldPath(), err))
+	}
+	if hasSensitiveChildren {
+		return "", "", errResponse(reqID, formatRenameErr(r.GetOldPath(), r.GetNewPath(), fs.ErrPermission))
+	}
+	return oldAbs, newAbs, nil
+}
+
+func defaultWriteMode(mode uint32) fs.FileMode {
+	perm := fs.FileMode(mode)
+	if perm == 0 {
+		return 0o644
+	}
+	return perm
+}
+
+func closeAfterWrite(file *os.File, writeErr error) error {
+	closeErr := file.Close()
+	if writeErr != nil {
+		return writeErr
+	}
+	return closeErr
+}
+
 func handleWrite(reqID string, r *remotefsv1.WriteFileReq, opts HandleOptions, deps writeDeps) *remotefsv1.FileResponse {
 	if r == nil {
 		return errResponse(reqID, "syncer: nil write request")
@@ -59,30 +123,24 @@ func handleWrite(reqID string, r *remotefsv1.WriteFileReq, opts HandleOptions, d
 		return errResponse(reqID, formatErr("write", r.GetPath(), fmt.Errorf("invalid argument")))
 	}
 
-	abs, err := resolveWorkspacePath(opts.Root, r.GetPath())
-	if err != nil {
-		return errResponse(reqID, fmt.Sprintf("syncer: unsafe path: %v", err))
+	abs, resp := resolveMutatingPath(reqID, "write", r.GetPath(), opts, pathResolutionOptions{
+		allowMissingLeaf:   true,
+		followFinalSymlink: true,
+	})
+	if resp != nil {
+		return resp
 	}
 
 	unlock := deps.locker.Lock(r.GetPath())
 	defer unlock()
 	deps.selfWrites.Remember(r.GetPath())
 
-	mode := fs.FileMode(r.GetMode())
-	if mode == 0 {
-		mode = 0o644
-	}
-
-	file, err := openWriteTarget(abs, mode, r.GetAppend())
+	file, err := openWriteTarget(abs, defaultWriteMode(r.GetMode()), r.GetAppend())
 	if err != nil {
 		return errResponse(reqID, formatErr("write", r.GetPath(), err))
 	}
 
-	err = writeContent(file, r.GetContent(), r.GetOffset(), r.GetAppend())
-	closeErr := file.Close()
-	if err == nil {
-		err = closeErr
-	}
+	err = closeAfterWrite(file, writeContent(file, r.GetContent(), r.GetOffset(), r.GetAppend()))
 	if err != nil {
 		return errResponse(reqID, formatErr("write", r.GetPath(), err))
 	}
@@ -99,15 +157,18 @@ func handleMkdir(reqID string, r *remotefsv1.MkdirReq, opts HandleOptions, deps 
 		return errResponse(reqID, "syncer: nil mkdir request")
 	}
 
-	abs, err := resolveWorkspacePath(opts.Root, r.GetPath())
-	if err != nil {
-		return errResponse(reqID, fmt.Sprintf("syncer: unsafe path: %v", err))
+	abs, resp := resolveMutatingPath(reqID, "mkdir", r.GetPath(), opts, pathResolutionOptions{
+		allowMissingLeaf: true,
+	})
+	if resp != nil {
+		return resp
 	}
 
 	unlock := deps.locker.Lock(r.GetPath())
 	defer unlock()
 	deps.selfWrites.Remember(r.GetPath())
 
+	var err error
 	if r.GetRecursive() {
 		//nolint:gosec // daemon intentionally exposes executable workspace dirs
 		err = os.MkdirAll(abs, 0o755)
@@ -131,9 +192,9 @@ func handleDelete(reqID string, r *remotefsv1.DeleteReq, opts HandleOptions, dep
 		return errResponse(reqID, "syncer: nil delete request")
 	}
 
-	abs, err := resolveWorkspacePath(opts.Root, r.GetPath())
-	if err != nil {
-		return errResponse(reqID, fmt.Sprintf("syncer: unsafe path: %v", err))
+	abs, resp := resolveMutatingPath(reqID, "delete", r.GetPath(), opts, pathResolutionOptions{})
+	if resp != nil {
+		return resp
 	}
 
 	unlock := deps.locker.Lock(r.GetPath())
@@ -151,13 +212,9 @@ func handleRename(reqID string, r *remotefsv1.RenameReq, opts HandleOptions, dep
 		return errResponse(reqID, "syncer: nil rename request")
 	}
 
-	oldAbs, err := resolveWorkspacePath(opts.Root, r.GetOldPath())
-	if err != nil {
-		return errResponse(reqID, fmt.Sprintf("syncer: unsafe path: %v", err))
-	}
-	newAbs, err := resolveWorkspacePath(opts.Root, r.GetNewPath())
-	if err != nil {
-		return errResponse(reqID, fmt.Sprintf("syncer: unsafe path: %v", err))
+	oldAbs, newAbs, resp := resolveRenamePaths(reqID, r, opts)
+	if resp != nil {
+		return resp
 	}
 
 	unlock := deps.locker.LockMany(r.GetOldPath(), r.GetNewPath())
@@ -184,9 +241,11 @@ func handleTruncate(reqID string, r *remotefsv1.TruncateReq, opts HandleOptions,
 		return errResponse(reqID, formatErr("truncate", r.GetPath(), fmt.Errorf("invalid argument")))
 	}
 
-	abs, err := resolveWorkspacePath(opts.Root, r.GetPath())
-	if err != nil {
-		return errResponse(reqID, fmt.Sprintf("syncer: unsafe path: %v", err))
+	abs, resp := resolveMutatingPath(reqID, "truncate", r.GetPath(), opts, pathResolutionOptions{
+		followFinalSymlink: true,
+	})
+	if resp != nil {
+		return resp
 	}
 
 	unlock := deps.locker.Lock(r.GetPath())

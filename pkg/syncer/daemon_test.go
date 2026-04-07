@@ -33,6 +33,15 @@ func TestRun_InvalidConfig(t *testing.T) {
 	assert.ErrorIs(t, err, config.ErrEmptyServerAddress)
 }
 
+func TestRun_InvalidSensitivePatterns(t *testing.T) {
+	cfg := testDaemonConfig(t.TempDir(), "passthrough:///phase6b", "token")
+	cfg.Workspace.SensitivePatterns = []string{"["}
+
+	err := Run(context.Background(), RunOptions{Config: cfg})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidSensitivePattern)
+}
+
 func TestRun_InitialTreeRequestsWatchAndHeartbeat(t *testing.T) {
 	root := testutil.NewTempWorkspace(t, map[string]string{
 		"README.md":      "hello",
@@ -141,6 +150,103 @@ func TestRun_InitialTreeRequestsWatchAndHeartbeat(t *testing.T) {
 		return msg.GetHeartbeat() != nil
 	})
 	assert.NotZero(t, heartbeatMsg.GetHeartbeat().GetTimestamp())
+
+	cancel()
+	select {
+	case err := <-errCh:
+		assert.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after cancellation")
+	}
+}
+
+func TestRun_SensitivePathsAreFiltered(t *testing.T) {
+	root := testutil.NewTempWorkspace(t, map[string]string{
+		".env":               "secret",
+		"visible.txt":        "hello",
+		".ssh/":              "",
+		".ssh/id_ed25519":    "private",
+		"secrets/":           "",
+		"secrets/value.yaml": "classified",
+	})
+	server := testutil.NewRecordingServer()
+	dialer := testutil.NewBufconnServer(t, server)
+
+	restore := overrideDaemonTimings(t, 40*time.Millisecond, 10*time.Millisecond, 20*time.Millisecond)
+	defer restore()
+
+	cfg := testDaemonConfig(root, "passthrough:///phase6b", "token")
+	cfg.Workspace.SensitivePatterns = []string{"secrets/**"}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- Run(ctx, RunOptions{
+			Config: cfg,
+			Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+			Dialer: dialer,
+		})
+	}()
+
+	waitForReady(t, server.WaitReady())
+
+	treeMsg := waitForRecordedMessage(t, server, func(msg *remotefsv1.DaemonMessage) bool {
+		return msg.GetFileTree() != nil
+	})
+	assert.ElementsMatch(t, []string{".ssh", "visible.txt"}, collectTreePaths(treeMsg.GetFileTree().GetFiles()))
+
+	require.NoError(t, server.SendRequest(&remotefsv1.ServerMessage{
+		Msg: &remotefsv1.ServerMessage_Request{
+			Request: &remotefsv1.FileRequest{
+				RequestId: "list-1",
+				Operation: &remotefsv1.FileRequest_ListDir{
+					ListDir: &remotefsv1.ListDirReq{Path: ""},
+				},
+			},
+		},
+	}))
+	listResp := waitForRecordedMessage(t, server, func(msg *remotefsv1.DaemonMessage) bool {
+		resp := msg.GetResponse()
+		return resp != nil && resp.GetRequestId() == "list-1"
+	}).GetResponse()
+	require.True(t, listResp.GetSuccess(), listResp.GetError())
+	assert.ElementsMatch(t, []string{".ssh", "visible.txt"}, collectTreePaths(listResp.GetEntries().GetFiles()))
+
+	require.NoError(t, server.SendRequest(&remotefsv1.ServerMessage{
+		Msg: &remotefsv1.ServerMessage_Request{
+			Request: &remotefsv1.FileRequest{
+				RequestId: "read-1",
+				Operation: &remotefsv1.FileRequest_Read{
+					Read: &remotefsv1.ReadFileReq{Path: ".env"},
+				},
+			},
+		},
+	}))
+	readResp := waitForRecordedMessage(t, server, func(msg *remotefsv1.DaemonMessage) bool {
+		resp := msg.GetResponse()
+		return resp != nil && resp.GetRequestId() == "read-1"
+	}).GetResponse()
+	assert.False(t, readResp.GetSuccess())
+	assert.Contains(t, readResp.GetError(), "no such file")
+
+	require.NoError(t, server.SendRequest(&remotefsv1.ServerMessage{
+		Msg: &remotefsv1.ServerMessage_Request{
+			Request: &remotefsv1.FileRequest{
+				RequestId: "write-1",
+				Operation: &remotefsv1.FileRequest_Write{
+					Write: &remotefsv1.WriteFileReq{Path: ".env", Content: []byte("override")},
+				},
+			},
+		},
+	}))
+	writeResp := waitForRecordedMessage(t, server, func(msg *remotefsv1.DaemonMessage) bool {
+		resp := msg.GetResponse()
+		return resp != nil && resp.GetRequestId() == "write-1"
+	}).GetResponse()
+	assert.False(t, writeResp.GetSuccess())
+	assert.Contains(t, writeResp.GetError(), "permission denied")
 
 	cancel()
 	select {

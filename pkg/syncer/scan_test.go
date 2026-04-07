@@ -81,6 +81,30 @@ func TestScan_ExcludeGlobPattern(t *testing.T) {
 	assert.Contains(t, paths, "src/b.go")
 }
 
+func TestScan_SensitiveBuiltinsAndCustomPatterns(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, ".env"), "topsecret")
+	mustWriteFile(t, filepath.Join(root, ".ssh", "id_ed25519"), "secret-key")
+	mustWriteFile(t, filepath.Join(root, "secrets", "api.txt"), "classified")
+	mustWriteFile(t, filepath.Join(root, "visible.txt"), "ok")
+
+	filter, err := NewSensitiveFilter([]string{"secrets/**"})
+	require.NoError(t, err)
+
+	got, err := Scan(ScanOptions{
+		Root:            root,
+		SensitiveFilter: filter,
+	})
+	require.NoError(t, err)
+
+	paths := collectScanPaths(got)
+	assert.Contains(t, paths, "visible.txt")
+	assert.NotContains(t, paths, ".env")
+	assert.NotContains(t, paths, ".ssh/id_ed25519")
+	assert.NotContains(t, paths, "secrets")
+	assert.NotContains(t, paths, "secrets/api.txt")
+}
+
 func TestScan_ExcludeRootedPattern(t *testing.T) {
 	root := t.TempDir()
 	mustWriteFile(t, filepath.Join(root, "build", "out.bin"), "")

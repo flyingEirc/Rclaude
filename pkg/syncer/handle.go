@@ -1,19 +1,22 @@
 package syncer
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
+	"syscall"
 
 	remotefsv1 "flyingEirc/Rclaude/api/proto/remotefs/v1"
 	"flyingEirc/Rclaude/pkg/safepath"
 )
 
 type HandleOptions struct {
-	Root        string
-	MaxReadSize int64
-	Locker      *pathLocker
-	SelfWrites  *selfWriteFilter
+	Root            string
+	MaxReadSize     int64
+	Locker          *pathLocker
+	SelfWrites      *selfWriteFilter
+	SensitiveFilter *SensitiveFilter
 }
 
 func Handle(req *remotefsv1.FileRequest, opts HandleOptions) *remotefsv1.FileResponse {
@@ -69,6 +72,15 @@ func handleRead(reqID string, r *remotefsv1.ReadFileReq, opts HandleOptions) *re
 	if err != nil {
 		return errResponse(reqID, fmt.Sprintf("syncer: unsafe path: %v", err))
 	}
+	blocked, err := blocksSensitivePath(opts.Root, r.GetPath(), opts.SensitiveFilter, pathResolutionOptions{
+		followFinalSymlink: true,
+	})
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return errResponse(reqID, fmt.Sprintf("syncer: read %q: %v", r.GetPath(), err))
+	}
+	if blocked {
+		return errResponse(reqID, formatErr("read", r.GetPath(), syscall.ENOENT))
+	}
 
 	//nolint:gosec // abs is validated by resolveWorkspacePath/safepath.Join
 	data, err := os.ReadFile(abs)
@@ -97,6 +109,13 @@ func handleStat(reqID string, r *remotefsv1.StatReq, opts HandleOptions) *remote
 	if err != nil {
 		return errResponse(reqID, fmt.Sprintf("syncer: unsafe path: %v", err))
 	}
+	blocked, err := blocksSensitivePath(opts.Root, r.GetPath(), opts.SensitiveFilter, pathResolutionOptions{})
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return errResponse(reqID, fmt.Sprintf("syncer: stat %q: %v", r.GetPath(), err))
+	}
+	if blocked {
+		return errResponse(reqID, formatErr("stat", r.GetPath(), syscall.ENOENT))
+	}
 
 	fi, err := os.Lstat(abs)
 	if err != nil {
@@ -121,6 +140,15 @@ func handleListDir(reqID string, r *remotefsv1.ListDirReq, opts HandleOptions) *
 	if err != nil {
 		return errResponse(reqID, fmt.Sprintf("syncer: unsafe path: %v", err))
 	}
+	blocked, err := blocksSensitivePath(opts.Root, r.GetPath(), opts.SensitiveFilter, pathResolutionOptions{
+		followFinalSymlink: true,
+	})
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return errResponse(reqID, fmt.Sprintf("syncer: list %q: %v", r.GetPath(), err))
+	}
+	if blocked {
+		return errResponse(reqID, formatErr("list", r.GetPath(), syscall.ENOENT))
+	}
 
 	entries, err := os.ReadDir(abs)
 	if err != nil {
@@ -133,7 +161,11 @@ func handleListDir(reqID string, r *remotefsv1.ListDirReq, opts HandleOptions) *
 		if infoErr != nil {
 			continue
 		}
-		out = append(out, fileInfoFromFS(joinRelPath(r.GetPath(), entry.Name()), info))
+		relPath := joinRelPath(r.GetPath(), entry.Name())
+		if isSensitivePath(opts.SensitiveFilter, relPath) {
+			continue
+		}
+		out = append(out, fileInfoFromFS(relPath, info))
 	}
 
 	return &remotefsv1.FileResponse{
@@ -190,4 +222,8 @@ func errResponse(reqID, msg string) *remotefsv1.FileResponse {
 		Success:   false,
 		Error:     msg,
 	}
+}
+
+func isSensitivePath(filter *SensitiveFilter, relPath string) bool {
+	return filter != nil && filter.Match(relPath)
 }

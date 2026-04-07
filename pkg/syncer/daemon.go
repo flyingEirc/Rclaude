@@ -39,42 +39,47 @@ type RunOptions struct {
 
 // Run blocks until ctx is canceled or an unrecoverable configuration error occurs.
 func Run(ctx context.Context, opts RunOptions) error {
-	ctx, logger, err := prepareRun(ctx, opts)
+	ctx, logger, sensitiveFilter, err := prepareRun(ctx, opts)
 	if err != nil {
 		return err
 	}
-	return runDaemonLoop(ctx, opts, logger)
+	return runDaemonLoop(ctx, opts, logger, sensitiveFilter)
 }
 
 func prepareRun(
 	ctx context.Context,
 	opts RunOptions,
-) (context.Context, *slog.Logger, error) {
+) (context.Context, *slog.Logger, *SensitiveFilter, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if opts.Config == nil {
-		return nil, nil, ErrNilConfig
+		return nil, nil, nil, ErrNilConfig
 	}
 	if err := opts.Config.Validate(); err != nil {
-		return nil, nil, fmt.Errorf("syncer: validate daemon config: %w", err)
+		return nil, nil, nil, fmt.Errorf("syncer: validate daemon config: %w", err)
+	}
+	sensitiveFilter, err := NewSensitiveFilter(opts.Config.Workspace.SensitivePatterns)
+	if err != nil {
+		return nil, nil, nil, err
 	}
 
 	logger := opts.Logger
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return logx.WithContext(ctx, logger), logger, nil
+	return logx.WithContext(ctx, logger), logger, sensitiveFilter, nil
 }
 
 func runDaemonLoop(
 	ctx context.Context,
 	opts RunOptions,
 	logger *slog.Logger,
+	sensitiveFilter *SensitiveFilter,
 ) error {
 	retry := newReconnectBackOff()
 	for {
-		stop, err := runDaemonIteration(ctx, opts, logger, retry)
+		stop, err := runDaemonIteration(ctx, opts, logger, retry, sensitiveFilter)
 		if stop {
 			return err
 		}
@@ -86,12 +91,13 @@ func runDaemonIteration(
 	opts RunOptions,
 	logger *slog.Logger,
 	retry *backoff.ExponentialBackOff,
+	sensitiveFilter *SensitiveFilter,
 ) (bool, error) {
 	if ctx.Err() != nil {
 		return true, nil
 	}
 
-	established, err := runSession(ctx, opts, logger)
+	established, err := runSession(ctx, opts, logger, sensitiveFilter)
 	if err == nil || ctx.Err() != nil {
 		return true, nil
 	}
@@ -128,6 +134,7 @@ func runSession(
 	ctx context.Context,
 	opts RunOptions,
 	logger *slog.Logger,
+	sensitiveFilter *SensitiveFilter,
 ) (bool, error) {
 	conn, err := transport.Dial(ctx, transport.DialOptions{
 		Address: opts.Config.Server.Address,
@@ -147,8 +154,9 @@ func runSession(
 	}
 
 	tree, err := Scan(ScanOptions{
-		Root:     opts.Config.Workspace.Path,
-		Excludes: opts.Config.Workspace.Exclude,
+		Root:            opts.Config.Workspace.Path,
+		Excludes:        opts.Config.Workspace.Exclude,
+		SensitiveFilter: sensitiveFilter,
 	})
 	if err != nil {
 		return false, fmt.Errorf("syncer: initial scan: %w", err)
@@ -161,7 +169,7 @@ func runSession(
 		return false, fmt.Errorf("syncer: send initial file tree: %w", err)
 	}
 
-	return true, serveStream(sessionCtx, cancel, stream, opts, logger)
+	return true, serveStream(sessionCtx, cancel, stream, opts, logger, sensitiveFilter)
 }
 
 func closeConn(conn io.Closer, logger *slog.Logger) {
@@ -176,15 +184,17 @@ func serveStream(
 	stream remotefsv1.RemoteFS_ConnectClient,
 	opts RunOptions,
 	logger *slog.Logger,
+	sensitiveFilter *SensitiveFilter,
 ) error {
 	sendQueue := make(chan *remotefsv1.DaemonMessage, daemonOutgoingBufferSize)
 	watchEvents := make(chan *remotefsv1.FileChange, daemonWatchEventBufferSize)
 	locker := newPathLocker()
 	selfWrites := newSelfWriteFilter(opts.Config.SelfWriteTTL)
 	handleOpts := HandleOptions{
-		Root:       opts.Config.Workspace.Path,
-		Locker:     locker,
-		SelfWrites: selfWrites,
+		Root:            opts.Config.Workspace.Path,
+		Locker:          locker,
+		SelfWrites:      selfWrites,
+		SensitiveFilter: sensitiveFilter,
 	}
 
 	group, groupCtx := errgroup.WithContext(ctx)
@@ -206,11 +216,12 @@ func serveStream(
 	})
 	start(func(ctx context.Context) error {
 		return Watch(ctx, WatchOptions{
-			Root:       opts.Config.Workspace.Path,
-			Excludes:   opts.Config.Workspace.Exclude,
-			Events:     watchEvents,
-			Logger:     logger,
-			SelfWrites: selfWrites,
+			Root:            opts.Config.Workspace.Path,
+			Excludes:        opts.Config.Workspace.Exclude,
+			SensitiveFilter: sensitiveFilter,
+			Events:          watchEvents,
+			Logger:          logger,
+			SelfWrites:      selfWrites,
 		})
 	})
 	start(func(ctx context.Context) error {

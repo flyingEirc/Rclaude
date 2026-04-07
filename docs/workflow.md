@@ -10,7 +10,7 @@
 |------|------|------|
 | [gofumpt](https://github.com/mvdan/gofumpt) | v0.7.0 | 代码格式化（gofmt 超集，更严格） |
 | [gci](https://github.com/daixiang0/gci) | v0.13.5 | import 分组排序 |
-| [golangci-lint](https://golangci-lint.run) | v2.1.6 | 静态检查聚合工具 |
+| [golangci-lint](https://golangci-lint.run) | v2.6.2 | 静态检查聚合工具 |
 
 首次克隆仓库后，运行以下命令一键安装所有工具：
 

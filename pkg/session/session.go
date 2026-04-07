@@ -31,6 +31,8 @@ var (
 	ErrSessionClosed = errors.New("session: session closed")
 	// ErrSessionReplaced indicates that a newer connection replaced this session.
 	ErrSessionReplaced = errors.New("session: session replaced by newer connection")
+	// ErrSessionOffline indicates that the session is being retained as an offline read-only snapshot.
+	ErrSessionOffline = errors.New("session: offline readonly")
 )
 
 // Session holds server-side state for one connected daemon.
@@ -43,12 +45,16 @@ type Session struct {
 	tree   *fstree.Tree
 	cache  *contentcache.Cache
 
+	prefetchMu  sync.Mutex
+	prefetching map[string]struct{}
+
 	pendingMu sync.Mutex
 	pending   map[string]chan *remotefsv1.FileResponse
 
-	stateMu  sync.Mutex
-	closeErr error
-	closed   chan struct{}
+	stateMu      sync.RWMutex
+	closeErr     error
+	closed       chan struct{}
+	offlineUntil time.Time
 
 	reqSeq        atomic.Uint64
 	lastHeartbeat atomic.Int64
@@ -66,12 +72,13 @@ func NewSession(userID string, opts ...SessionOptions) *Session {
 	}
 
 	return &Session{
-		userID:  userID,
-		sendCh:  make(chan *remotefsv1.ServerMessage, sessionSendBufferSize),
-		tree:    fstree.New(),
-		cache:   contentcache.New(cfg.CacheMaxBytes),
-		pending: make(map[string]chan *remotefsv1.FileResponse),
-		closed:  make(chan struct{}),
+		userID:      userID,
+		sendCh:      make(chan *remotefsv1.ServerMessage, sessionSendBufferSize),
+		tree:        fstree.New(),
+		cache:       contentcache.New(cfg.CacheMaxBytes),
+		prefetching: make(map[string]struct{}),
+		pending:     make(map[string]chan *remotefsv1.FileResponse),
+		closed:      make(chan struct{}),
 	}
 }
 
@@ -137,6 +144,10 @@ func (s *Session) Serve(ctx context.Context, stream remotefsv1.RemoteFS_ConnectS
 
 // Request sends one file request to the daemon and waits for the matching response.
 func (s *Session) Request(ctx context.Context, req *remotefsv1.FileRequest) (*remotefsv1.FileResponse, error) {
+	if s.IsOfflineReadonly(time.Time{}) {
+		return nil, ErrSessionOffline
+	}
+
 	ctx, cloned, err := s.prepareRequest(ctx, req)
 	if err != nil {
 		return nil, err
@@ -152,6 +163,57 @@ func (s *Session) Request(ctx context.Context, req *remotefsv1.FileRequest) (*re
 		return nil, err
 	}
 	return s.awaitResponse(ctx, respCh)
+}
+
+func (s *Session) RetainOffline(until time.Time) bool {
+	if s == nil || until.IsZero() {
+		return false
+	}
+
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+
+	if errors.Is(s.closeErr, ErrSessionReplaced) {
+		return false
+	}
+
+	s.offlineUntil = until
+	s.closeErr = ErrSessionOffline
+	return true
+}
+
+func (s *Session) IsOfflineReadonly(now time.Time) bool {
+	if s == nil {
+		return false
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
+
+	if s.offlineUntil.IsZero() {
+		return false
+	}
+	return now.Before(s.offlineUntil)
+}
+
+func (s *Session) IsExpired(now time.Time) bool {
+	if s == nil {
+		return false
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
+
+	if s.offlineUntil.IsZero() {
+		return false
+	}
+	return !now.Before(s.offlineUntil)
 }
 
 // Lookup returns the latest known metadata for the given relative path.
@@ -228,6 +290,31 @@ func (s *Session) InvalidateContentPrefix(relPath string) {
 		return
 	}
 	s.currentCache().InvalidatePrefix(relPath)
+}
+
+func (s *Session) TryStartPrefetch(relPath string) bool {
+	if s == nil || relPath == "" {
+		return false
+	}
+
+	s.prefetchMu.Lock()
+	defer s.prefetchMu.Unlock()
+
+	if _, exists := s.prefetching[relPath]; exists {
+		return false
+	}
+	s.prefetching[relPath] = struct{}{}
+	return true
+}
+
+func (s *Session) FinishPrefetch(relPath string) {
+	if s == nil || relPath == "" {
+		return
+	}
+
+	s.prefetchMu.Lock()
+	defer s.prefetchMu.Unlock()
+	delete(s.prefetching, relPath)
 }
 
 func (s *Session) runSendLoop(ctx context.Context, stream remotefsv1.RemoteFS_ConnectServer) error {
@@ -485,8 +572,8 @@ func (s *Session) closeWithError(err error) {
 }
 
 func (s *Session) closeErrValue() error {
-	s.stateMu.Lock()
-	defer s.stateMu.Unlock()
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
 	if s.closeErr == nil {
 		return ErrSessionClosed
 	}

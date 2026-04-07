@@ -19,11 +19,12 @@ import (
 var ErrNilEvents = errors.New("syncer: watch events channel is nil")
 
 type WatchOptions struct {
-	Root       string
-	Excludes   []string
-	Events     chan<- *remotefsv1.FileChange
-	Logger     *slog.Logger
-	SelfWrites *selfWriteFilter
+	Root            string
+	Excludes        []string
+	SensitiveFilter *SensitiveFilter
+	Events          chan<- *remotefsv1.FileChange
+	Logger          *slog.Logger
+	SelfWrites      *selfWriteFilter
 }
 
 func Watch(ctx context.Context, opts WatchOptions) error {
@@ -49,7 +50,7 @@ func Watch(ctx context.Context, opts WatchOptions) error {
 		}
 	}()
 
-	if err := addTreeRecursively(watcher, opts.Root, opts.Excludes); err != nil {
+	if err := addTreeRecursively(watcher, opts.Root, opts.Excludes, opts.SensitiveFilter); err != nil {
 		return fmt.Errorf("syncer: initial add: %w", err)
 	}
 
@@ -75,7 +76,12 @@ func runWatchLoop(ctx context.Context, watcher *fsnotify.Watcher, opts WatchOpti
 	}
 }
 
-func addTreeRecursively(watcher *fsnotify.Watcher, root string, excludes []string) error {
+func addTreeRecursively(
+	watcher *fsnotify.Watcher,
+	root string,
+	excludes []string,
+	filter *SensitiveFilter,
+) error {
 	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return nil
@@ -83,17 +89,40 @@ func addTreeRecursively(watcher *fsnotify.Watcher, root string, excludes []strin
 		if !entry.IsDir() {
 			return nil
 		}
-		if path != root {
-			rel, err := filepath.Rel(root, path)
-			if err == nil && matchExclude(safepath.ToSlash(rel), excludes) {
-				return filepath.SkipDir
-			}
+		skipDir, err := shouldSkipWatchedDir(root, path, excludes, filter)
+		if err != nil {
+			return err
+		}
+		if skipDir {
+			return filepath.SkipDir
 		}
 		if err := watcher.Add(path); err != nil {
 			return fmt.Errorf("add %q: %w", path, err)
 		}
 		return nil
 	})
+}
+
+func shouldSkipWatchedDir(
+	root string,
+	path string,
+	excludes []string,
+	filter *SensitiveFilter,
+) (bool, error) {
+	if path == root {
+		return false, nil
+	}
+
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false, nil
+	}
+	rel = safepath.ToSlash(rel)
+
+	if filter != nil && filter.Match(rel) {
+		return true, nil
+	}
+	return matchExclude(rel, excludes), nil
 }
 
 func handleWatchEvent(
@@ -122,6 +151,9 @@ func handleWatchEvent(
 func watchChangeFromEvent(opts WatchOptions, ev fsnotify.Event) (*remotefsv1.FileChange, bool) {
 	rel, ok := watchRelativePath(opts.Root, ev.Name)
 	if !ok || matchExclude(rel, opts.Excludes) {
+		return nil, false
+	}
+	if opts.SensitiveFilter != nil && opts.SensitiveFilter.Match(rel) {
 		return nil, false
 	}
 	if opts.SelfWrites != nil && opts.SelfWrites.ShouldSuppress(rel) {

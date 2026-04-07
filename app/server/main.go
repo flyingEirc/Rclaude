@@ -108,8 +108,12 @@ func prepareRuntime(
 	}
 
 	manager := session.NewManager(session.ManagerOptions{
-		RequestTimeout: cfg.RequestTimeout,
-		CacheMaxBytes:  cfg.Cache.MaxBytes,
+		RequestTimeout:         cfg.RequestTimeout,
+		CacheMaxBytes:          cfg.Cache.MaxBytes,
+		OfflineReadOnlyTTL:     cfg.OfflineReadOnlyTTL,
+		PrefetchEnabled:        cfg.Prefetch.Enabled,
+		PrefetchMaxFileBytes:   cfg.Prefetch.MaxFileBytes,
+		PrefetchMaxFilesPerDir: cfg.Prefetch.MaxFilesPerDir,
 	})
 	service, err := session.NewService(manager)
 	if err != nil {

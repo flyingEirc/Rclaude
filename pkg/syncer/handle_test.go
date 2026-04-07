@@ -184,6 +184,64 @@ func TestHandle_ListDir_Subdir(t *testing.T) {
 	assert.Equal(t, "sub/inner.txt", entries[0].GetPath())
 }
 
+func TestHandle_ReadLikeSensitivePathsReturnNotExist(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, ".ssh"), 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(root, ".env"), []byte("secret"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(root, ".ssh", "id_ed25519"), []byte("secret"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "visible.txt"), []byte("ok"), 0o600))
+
+	filter, err := NewSensitiveFilter(nil)
+	require.NoError(t, err)
+	opts := HandleOptions{Root: root, SensitiveFilter: filter}
+
+	readResp := Handle(&remotefsv1.FileRequest{
+		Operation: &remotefsv1.FileRequest_Read{
+			Read: &remotefsv1.ReadFileReq{Path: ".env"},
+		},
+	}, opts)
+	assert.False(t, readResp.GetSuccess())
+	assert.Contains(t, readResp.GetError(), "no such file")
+
+	statResp := Handle(&remotefsv1.FileRequest{
+		Operation: &remotefsv1.FileRequest_Stat{
+			Stat: &remotefsv1.StatReq{Path: ".ssh/id_ed25519"},
+		},
+	}, opts)
+	assert.False(t, statResp.GetSuccess())
+	assert.Contains(t, statResp.GetError(), "no such file")
+
+	listResp := Handle(&remotefsv1.FileRequest{
+		Operation: &remotefsv1.FileRequest_ListDir{
+			ListDir: &remotefsv1.ListDirReq{Path: ""},
+		},
+	}, opts)
+	require.True(t, listResp.GetSuccess(), listResp.GetError())
+	paths := collectScanPaths(listResp.GetEntries().GetFiles())
+	assert.ElementsMatch(t, []string{".ssh", "visible.txt"}, paths)
+}
+
+func TestHandle_Read_SensitiveSymlinkAliasReturnsNotExist(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, ".env"), []byte("secret"), 0o600))
+	require.NoError(t, os.Symlink(".env", filepath.Join(root, "visible.txt")))
+
+	filter, err := NewSensitiveFilter(nil)
+	require.NoError(t, err)
+
+	resp := Handle(&remotefsv1.FileRequest{
+		Operation: &remotefsv1.FileRequest_Read{
+			Read: &remotefsv1.ReadFileReq{Path: "visible.txt"},
+		},
+	}, HandleOptions{
+		Root:            root,
+		SensitiveFilter: filter,
+	})
+
+	assert.False(t, resp.GetSuccess())
+	assert.Contains(t, resp.GetError(), "no such file")
+}
+
 func TestHandle_ListDir_Missing(t *testing.T) {
 	root := t.TempDir()
 	resp := Handle(&remotefsv1.FileRequest{
