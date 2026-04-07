@@ -1,6 +1,7 @@
 package syncer
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -56,12 +57,17 @@ func resolveMutatingPath(
 	op string,
 	relPath string,
 	opts HandleOptions,
+	resolveOpts pathResolutionOptions,
 ) (string, *remotefsv1.FileResponse) {
 	abs, err := resolveWorkspacePath(opts.Root, relPath)
 	if err != nil {
 		return "", errResponse(reqID, fmt.Sprintf("syncer: unsafe path: %v", err))
 	}
-	if isSensitivePath(opts.SensitiveFilter, relPath) {
+	blocked, err := blocksSensitivePath(opts.Root, relPath, opts.SensitiveFilter, resolveOpts)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return "", errResponse(reqID, fmt.Sprintf("syncer: %s %q: %v", op, relPath, err))
+	}
+	if blocked {
 		return "", errResponse(reqID, formatErr(op, relPath, fs.ErrPermission))
 	}
 	return abs, nil
@@ -72,13 +78,23 @@ func resolveRenamePaths(
 	r *remotefsv1.RenameReq,
 	opts HandleOptions,
 ) (string, string, *remotefsv1.FileResponse) {
-	oldAbs, resp := resolveMutatingPath(reqID, "rename", r.GetOldPath(), opts)
+	oldAbs, resp := resolveMutatingPath(reqID, "rename", r.GetOldPath(), opts, pathResolutionOptions{})
 	if resp != nil {
 		return "", "", resp
 	}
-	newAbs, resp := resolveMutatingPath(reqID, "rename", r.GetNewPath(), opts)
+	newAbs, resp := resolveMutatingPath(reqID, "rename", r.GetNewPath(), opts, pathResolutionOptions{
+		allowMissingLeaf: true,
+	})
 	if resp != nil {
 		return "", "", resp
+	}
+
+	hasSensitiveChildren, err := hasSensitiveDescendant(opts.Root, r.GetOldPath(), opts.SensitiveFilter)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return "", "", errResponse(reqID, fmt.Sprintf("syncer: rename %q: %v", r.GetOldPath(), err))
+	}
+	if hasSensitiveChildren {
+		return "", "", errResponse(reqID, formatRenameErr(r.GetOldPath(), r.GetNewPath(), fs.ErrPermission))
 	}
 	return oldAbs, newAbs, nil
 }
@@ -107,7 +123,10 @@ func handleWrite(reqID string, r *remotefsv1.WriteFileReq, opts HandleOptions, d
 		return errResponse(reqID, formatErr("write", r.GetPath(), fmt.Errorf("invalid argument")))
 	}
 
-	abs, resp := resolveMutatingPath(reqID, "write", r.GetPath(), opts)
+	abs, resp := resolveMutatingPath(reqID, "write", r.GetPath(), opts, pathResolutionOptions{
+		allowMissingLeaf:   true,
+		followFinalSymlink: true,
+	})
 	if resp != nil {
 		return resp
 	}
@@ -138,7 +157,9 @@ func handleMkdir(reqID string, r *remotefsv1.MkdirReq, opts HandleOptions, deps 
 		return errResponse(reqID, "syncer: nil mkdir request")
 	}
 
-	abs, resp := resolveMutatingPath(reqID, "mkdir", r.GetPath(), opts)
+	abs, resp := resolveMutatingPath(reqID, "mkdir", r.GetPath(), opts, pathResolutionOptions{
+		allowMissingLeaf: true,
+	})
 	if resp != nil {
 		return resp
 	}
@@ -171,7 +192,7 @@ func handleDelete(reqID string, r *remotefsv1.DeleteReq, opts HandleOptions, dep
 		return errResponse(reqID, "syncer: nil delete request")
 	}
 
-	abs, resp := resolveMutatingPath(reqID, "delete", r.GetPath(), opts)
+	abs, resp := resolveMutatingPath(reqID, "delete", r.GetPath(), opts, pathResolutionOptions{})
 	if resp != nil {
 		return resp
 	}
@@ -220,7 +241,9 @@ func handleTruncate(reqID string, r *remotefsv1.TruncateReq, opts HandleOptions,
 		return errResponse(reqID, formatErr("truncate", r.GetPath(), fmt.Errorf("invalid argument")))
 	}
 
-	abs, resp := resolveMutatingPath(reqID, "truncate", r.GetPath(), opts)
+	abs, resp := resolveMutatingPath(reqID, "truncate", r.GetPath(), opts, pathResolutionOptions{
+		followFinalSymlink: true,
+	})
 	if resp != nil {
 		return resp
 	}

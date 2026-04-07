@@ -1,6 +1,7 @@
 package syncer
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -71,7 +72,13 @@ func handleRead(reqID string, r *remotefsv1.ReadFileReq, opts HandleOptions) *re
 	if err != nil {
 		return errResponse(reqID, fmt.Sprintf("syncer: unsafe path: %v", err))
 	}
-	if isSensitivePath(opts.SensitiveFilter, r.GetPath()) {
+	blocked, err := blocksSensitivePath(opts.Root, r.GetPath(), opts.SensitiveFilter, pathResolutionOptions{
+		followFinalSymlink: true,
+	})
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return errResponse(reqID, fmt.Sprintf("syncer: read %q: %v", r.GetPath(), err))
+	}
+	if blocked {
 		return errResponse(reqID, formatErr("read", r.GetPath(), syscall.ENOENT))
 	}
 
@@ -102,7 +109,11 @@ func handleStat(reqID string, r *remotefsv1.StatReq, opts HandleOptions) *remote
 	if err != nil {
 		return errResponse(reqID, fmt.Sprintf("syncer: unsafe path: %v", err))
 	}
-	if isSensitivePath(opts.SensitiveFilter, r.GetPath()) {
+	blocked, err := blocksSensitivePath(opts.Root, r.GetPath(), opts.SensitiveFilter, pathResolutionOptions{})
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return errResponse(reqID, fmt.Sprintf("syncer: stat %q: %v", r.GetPath(), err))
+	}
+	if blocked {
 		return errResponse(reqID, formatErr("stat", r.GetPath(), syscall.ENOENT))
 	}
 
@@ -129,7 +140,13 @@ func handleListDir(reqID string, r *remotefsv1.ListDirReq, opts HandleOptions) *
 	if err != nil {
 		return errResponse(reqID, fmt.Sprintf("syncer: unsafe path: %v", err))
 	}
-	if isSensitivePath(opts.SensitiveFilter, r.GetPath()) {
+	blocked, err := blocksSensitivePath(opts.Root, r.GetPath(), opts.SensitiveFilter, pathResolutionOptions{
+		followFinalSymlink: true,
+	})
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return errResponse(reqID, fmt.Sprintf("syncer: list %q: %v", r.GetPath(), err))
+	}
+	if blocked {
 		return errResponse(reqID, formatErr("list", r.GetPath(), syscall.ENOENT))
 	}
 

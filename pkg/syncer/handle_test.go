@@ -221,6 +221,27 @@ func TestHandle_ReadLikeSensitivePathsReturnNotExist(t *testing.T) {
 	assert.ElementsMatch(t, []string{".ssh", "visible.txt"}, paths)
 }
 
+func TestHandle_Read_SensitiveSymlinkAliasReturnsNotExist(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, ".env"), []byte("secret"), 0o600))
+	require.NoError(t, os.Symlink(".env", filepath.Join(root, "visible.txt")))
+
+	filter, err := NewSensitiveFilter(nil)
+	require.NoError(t, err)
+
+	resp := Handle(&remotefsv1.FileRequest{
+		Operation: &remotefsv1.FileRequest_Read{
+			Read: &remotefsv1.ReadFileReq{Path: "visible.txt"},
+		},
+	}, HandleOptions{
+		Root:            root,
+		SensitiveFilter: filter,
+	})
+
+	assert.False(t, resp.GetSuccess())
+	assert.Contains(t, resp.GetError(), "no such file")
+}
+
 func TestHandle_ListDir_Missing(t *testing.T) {
 	root := t.TempDir()
 	resp := Handle(&remotefsv1.FileRequest{

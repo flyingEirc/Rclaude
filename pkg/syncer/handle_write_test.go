@@ -195,3 +195,61 @@ func TestHandleWriteOps_DenySensitivePaths(t *testing.T) {
 		})
 	}
 }
+
+func TestHandleWriteAndTruncate_DenySensitiveSymlinkAliases(t *testing.T) {
+	t.Parallel()
+
+	opts, deps, root := newWriteOpts(t)
+	require.NoError(t, os.WriteFile(filepath.Join(root, ".env"), []byte("secret"), 0o600))
+	require.NoError(t, os.Symlink(".env", filepath.Join(root, "visible.txt")))
+	require.NoError(t, os.Symlink(".env.new", filepath.Join(root, "future.txt")))
+
+	writeResp := handleWrite("w1", &remotefsv1.WriteFileReq{
+		Path:    "visible.txt",
+		Content: []byte("mutated"),
+	}, opts, deps)
+	assert.False(t, writeResp.GetSuccess())
+	assert.Contains(t, writeResp.GetError(), "permission denied")
+
+	truncateResp := handleTruncate("t1", &remotefsv1.TruncateReq{
+		Path: "visible.txt",
+		Size: 0,
+	}, opts, deps)
+	assert.False(t, truncateResp.GetSuccess())
+	assert.Contains(t, truncateResp.GetError(), "permission denied")
+
+	createResp := handleWrite("w2", &remotefsv1.WriteFileReq{
+		Path:    "future.txt",
+		Content: []byte("new secret"),
+	}, opts, deps)
+	assert.False(t, createResp.GetSuccess())
+	assert.Contains(t, createResp.GetError(), "permission denied")
+
+	//nolint:gosec // test reads from a tempdir fixture
+	data, err := os.ReadFile(filepath.Join(root, ".env"))
+	require.NoError(t, err)
+	assert.Equal(t, "secret", string(data))
+
+	_, err = os.Stat(filepath.Join(root, ".env.new"))
+	assert.ErrorIs(t, err, os.ErrNotExist)
+}
+
+func TestHandleRename_DenyDirectoryContainingSensitiveDescendant(t *testing.T) {
+	t.Parallel()
+
+	opts, deps, root := newWriteOpts(t)
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "config"), 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "config", ".env"), []byte("secret"), 0o600))
+
+	resp := handleRename("rn1", &remotefsv1.RenameReq{
+		OldPath: "config",
+		NewPath: "moved",
+	}, opts, deps)
+	assert.False(t, resp.GetSuccess())
+	assert.Contains(t, resp.GetError(), "permission denied")
+
+	_, err := os.Stat(filepath.Join(root, "config", ".env"))
+	require.NoError(t, err)
+	_, err = os.Stat(filepath.Join(root, "moved"))
+	assert.ErrorIs(t, err, os.ErrNotExist)
+}
