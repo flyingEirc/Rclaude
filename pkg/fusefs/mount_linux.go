@@ -50,14 +50,18 @@ func Mount(ctx context.Context, opts Options) (Mounted, error) {
 		return nil, fmt.Errorf("fusefs: mount %q: %w", opts.Mountpoint, err)
 	}
 	if err := server.WaitMount(); err != nil {
-		_ = server.Unmount()
+		if cleanupErr := server.Unmount(); cleanupErr != nil {
+			err = errors.Join(err, fmt.Errorf("unmount after failed mount: %w", cleanupErr))
+		}
 		return nil, fmt.Errorf("fusefs: wait mount %q: %w", opts.Mountpoint, err)
 	}
 
 	mounted := &mountedFS{server: server}
 	go func() {
 		<-ctx.Done()
-		_ = mounted.Close()
+		if err := mounted.Close(); err != nil {
+			return
+		}
 	}()
 
 	return mounted, nil
@@ -341,33 +345,43 @@ func visibleMode(info *remotefsv1.FileInfo) uint32 {
 	return stableMode(info) | perms
 }
 
+type errnoRule struct {
+	errno syscall.Errno
+	match func(error) bool
+}
+
+var errnoRules = []errnoRule{
+	{errno: syscall.EINTR, match: func(err error) bool { return errors.Is(err, context.Canceled) }},
+	{errno: syscall.ETIMEDOUT, match: func(err error) bool { return isAnyError(err, ErrRequestTimeout, context.DeadlineExceeded) }},
+	{errno: syscall.EIO, match: func(err error) bool { return isAnyError(err, ErrSessionOffline, ErrSessionFailed) }},
+	{errno: syscall.ENOENT, match: func(err error) bool { return errors.Is(err, ErrPathNotFound) }},
+	{errno: syscall.EACCES, match: func(err error) bool { return errors.Is(err, ErrPermissionDenied) }},
+	{errno: syscall.EEXIST, match: func(err error) bool { return errors.Is(err, ErrAlreadyExists) }},
+	{errno: syscall.ENOTDIR, match: func(err error) bool { return errors.Is(err, ErrNotDirectory) }},
+	{errno: syscall.EISDIR, match: func(err error) bool { return errors.Is(err, ErrIsDirectory) }},
+	{errno: syscall.ENOTEMPTY, match: func(err error) bool { return errors.Is(err, ErrDirectoryNotEmpty) }},
+	{errno: syscall.EXDEV, match: func(err error) bool { return errors.Is(err, ErrCrossDevice) }},
+	{errno: syscall.EINVAL, match: func(err error) bool { return errors.Is(err, ErrInvalidArgument) }},
+}
+
 func errnoFromError(err error) syscall.Errno {
-	switch {
-	case err == nil:
+	if err == nil {
 		return 0
-	case errors.Is(err, context.Canceled):
-		return syscall.EINTR
-	case errors.Is(err, ErrRequestTimeout), errors.Is(err, context.DeadlineExceeded):
-		return syscall.ETIMEDOUT
-	case errors.Is(err, ErrSessionOffline), errors.Is(err, ErrSessionFailed):
-		return syscall.EIO
-	case errors.Is(err, ErrPathNotFound):
-		return syscall.ENOENT
-	case errors.Is(err, ErrPermissionDenied):
-		return syscall.EACCES
-	case errors.Is(err, ErrAlreadyExists):
-		return syscall.EEXIST
-	case errors.Is(err, ErrNotDirectory):
-		return syscall.ENOTDIR
-	case errors.Is(err, ErrIsDirectory):
-		return syscall.EISDIR
-	case errors.Is(err, ErrDirectoryNotEmpty):
-		return syscall.ENOTEMPTY
-	case errors.Is(err, ErrCrossDevice):
-		return syscall.EXDEV
-	case errors.Is(err, ErrInvalidArgument):
-		return syscall.EINVAL
-	default:
-		return syscall.EIO
 	}
+
+	for _, rule := range errnoRules {
+		if rule.match(err) {
+			return rule.errno
+		}
+	}
+	return syscall.EIO
+}
+
+func isAnyError(err error, targets ...error) bool {
+	for _, target := range targets {
+		if errors.Is(err, target) {
+			return true
+		}
+	}
+	return false
 }

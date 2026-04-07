@@ -53,12 +53,12 @@ func TestWorkspaceNode_Create_Success(t *testing.T) {
 	})
 	defer cleanup()
 
-	node := &workspaceNode{manager: manager, userID: "u1", relPath: "dir"}
+	node := newAttachedWorkspaceNode(manager, "u1", "dir")
 	out := &fuse.EntryOut{}
 	inode, _, _, errno := node.Create(context.Background(), "new.txt", 0, 0o644, out)
 	assert.Equal(t, syscall.Errno(0), errno)
 	assert.NotNil(t, inode)
-	assert.Equal(t, uint32(syscall.S_IFREG|0o644), out.Attr.Mode)
+	assert.Equal(t, uint32(syscall.S_IFREG|0o644), out.Mode)
 }
 
 func TestWorkspaceNode_Write_ForwardsOffset(t *testing.T) {
@@ -112,7 +112,7 @@ func TestWorkspaceNode_MkdirUnlinkRmdir(t *testing.T) {
 	})
 	defer cleanup()
 
-	root := &workspaceNode{manager: manager, userID: "u1", relPath: ""}
+	root := newAttachedWorkspaceNode(manager, "u1", "")
 	out := &fuse.EntryOut{}
 	_, errno := root.Mkdir(context.Background(), "newdir", 0o755, out)
 	assert.Equal(t, syscall.Errno(0), errno)
@@ -175,7 +175,7 @@ func TestWorkspaceNode_Setattr_OnlySize(t *testing.T) {
 	errno := node.Setattr(context.Background(), nil, in, out)
 	assert.Equal(t, syscall.Errno(0), errno)
 	assert.True(t, truncateSeen)
-	assert.EqualValues(t, 7, out.Attr.Size)
+	assert.EqualValues(t, 7, out.Size)
 }
 
 func TestErrnoFromError(t *testing.T) {
@@ -198,57 +198,104 @@ func startFakeSession(
 	ctx, cancel := context.WithCancel(context.Background())
 	stream := testutil.NewMockConnectStream(ctx)
 	manager := session.NewManager(session.ManagerOptions{RequestTimeout: time.Second})
+	current := bootstrapFakeSession(t, manager, files)
+	errCh := startFakeServe(ctx, current, stream)
+	done := startFakeResponder(ctx, stream, responder)
+
+	cleanup := func() {
+		cancel()
+		<-done
+		<-errCh
+		manager.Remove(current)
+	}
+	return manager, cleanup
+}
+
+func bootstrapFakeSession(t *testing.T, manager *session.Manager, files []*remotefsv1.FileInfo) *session.Session {
+	t.Helper()
+
 	current := session.NewSession("u1")
 	require.NoError(t, current.Bootstrap(&remotefsv1.DaemonMessage{
 		Msg: &remotefsv1.DaemonMessage_FileTree{
 			FileTree: &remotefsv1.FileTree{Files: files},
 		},
 	}))
+
 	_, err := manager.Register(current)
 	require.NoError(t, err)
+	return current
+}
 
+func startFakeServe(
+	ctx context.Context,
+	current *session.Session,
+	stream *testutil.MockConnectStream,
+) <-chan error {
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- current.Serve(ctx, stream)
 	}()
+	return errCh
+}
 
+func startFakeResponder(
+	ctx context.Context,
+	stream *testutil.MockConnectStream,
+	responder func(*remotefsv1.FileRequest) *remotefsv1.FileResponse,
+) <-chan struct{} {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		for {
-			msg, err := stream.AwaitSend(50 * time.Millisecond)
-			if err != nil {
-				select {
-				case <-ctx.Done():
-					return
-				default:
-					continue
-				}
+			req, ok := awaitFakeRequest(ctx, stream)
+			if !ok {
+				return
 			}
-			req := msg.GetRequest()
-			if req == nil {
-				continue
-			}
-			resp := responder(req)
-			if resp == nil {
-				continue
-			}
-			if resp.GetRequestId() == "" {
-				resp.RequestId = req.GetRequestId()
-			}
-			stream.PushRecv(&remotefsv1.DaemonMessage{
-				Msg: &remotefsv1.DaemonMessage_Response{Response: resp},
-			})
+			pushFakeResponse(stream, req, responder(req))
 		}
 	}()
+	return done
+}
 
-	cleanup := func() {
-		cancel()
-		<-done
-		_ = <-errCh
-		manager.Remove(current)
+func awaitFakeRequest(ctx context.Context, stream *testutil.MockConnectStream) (*remotefsv1.FileRequest, bool) {
+	for {
+		msg, err := stream.AwaitSend(50 * time.Millisecond)
+		if err != nil {
+			select {
+			case <-ctx.Done():
+				return nil, false
+			default:
+				continue
+			}
+		}
+
+		req := msg.GetRequest()
+		if req != nil {
+			return req, true
+		}
 	}
-	return manager, cleanup
+}
+
+func pushFakeResponse(
+	stream *testutil.MockConnectStream,
+	req *remotefsv1.FileRequest,
+	resp *remotefsv1.FileResponse,
+) {
+	if resp == nil {
+		return
+	}
+	if resp.GetRequestId() == "" {
+		resp.RequestId = req.GetRequestId()
+	}
+	stream.PushRecv(&remotefsv1.DaemonMessage{
+		Msg: &remotefsv1.DaemonMessage_Response{Response: resp},
+	})
+}
+
+func newAttachedWorkspaceNode(manager *session.Manager, userID, relPath string) *workspaceNode {
+	node := &workspaceNode{manager: manager, userID: userID, relPath: relPath}
+	fs.NewNodeFS(node, &fs.Options{})
+	return node
 }
 
 var _ fs.FileHandle = nil

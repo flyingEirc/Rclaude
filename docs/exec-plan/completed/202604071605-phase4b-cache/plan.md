@@ -8,12 +8,12 @@
 
 ## 任务
 
-- [ ] T1 新增 `pkg/contentcache`，实现按字节预算的 LRU 缓存与单测
-- [ ] T2 扩展 `pkg/session`，注入缓存配置并补齐缓存辅助方法与失效逻辑
-- [ ] T3 扩展 `pkg/session/manager.go`、`pkg/session/service.go`，统一从 manager 构造带缓存配置的会话
-- [ ] T4 改造 `pkg/fusefs/view.go` 的 `readChunk`，实现缓存命中、全量读透和禁用缓存降级
-- [ ] T5 扩展 `internal/inmemtest` 与 `pkg/fusefs/*_test.go`，覆盖重复读命中、变更失效、写后失效
-- [ ] T6 执行 `make fmt`、`make lint`、`make test`、`go build ./...`，把结果写入 `开发流程.md`
+- [x] T1 新增 `pkg/contentcache`，实现按字节预算的 LRU 缓存与单测
+- [x] T2 扩展 `pkg/session`，注入缓存配置并补齐缓存辅助方法与失效逻辑
+- [x] T3 扩展 `pkg/session/manager.go`、`pkg/session/service.go`，统一从 manager 构造带缓存配置的会话
+- [x] T4 改造 `pkg/fusefs/view.go` 的 `readChunk`，实现缓存命中、全量读透和禁用缓存降级
+- [x] T5 扩展 `internal/inmemtest` 与 `pkg/fusefs/*_test.go`，覆盖重复读命中、变更失效、写后失效
+- [x] T6 执行 `make fmt`、`make lint`、`make test`、`go build ./...`，把结果写入 `开发流程.md`
 
 ## 验收标准
 
