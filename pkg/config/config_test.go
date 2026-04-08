@@ -59,6 +59,71 @@ log:
 	assert.Equal(t, []string{"secrets/**", "*.local.env"}, cfg.Workspace.SensitivePatterns)
 	assert.Equal(t, "info", cfg.Log.Level)
 	assert.Equal(t, "json", cfg.Log.Format)
+	assert.Zero(t, cfg.RateLimit.ReadBytesPerSec)
+	assert.Zero(t, cfg.RateLimit.WriteBytesPerSec)
+}
+
+func TestLoadDaemonExplicitRateLimit(t *testing.T) {
+	t.Parallel()
+	body := `
+server:
+  address: "example.com:9000"
+workspace:
+  path: ` + escapeYAML(absWorkspace()) + `
+rate_limit:
+  read_bytes_per_sec: 1024
+  write_bytes_per_sec: 2048
+`
+	path := writeYAML(t, "daemon.yaml", body)
+	cfg, err := config.LoadDaemon(path)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1024, cfg.RateLimit.ReadBytesPerSec)
+	assert.EqualValues(t, 2048, cfg.RateLimit.WriteBytesPerSec)
+}
+
+func TestLoadDaemonNegativeRateLimit(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		body string
+		err  error
+	}{
+		{
+			name: "negative read",
+			body: `
+server:
+  address: "example.com:9000"
+workspace:
+  path: ` + escapeYAML(absWorkspace()) + `
+rate_limit:
+  read_bytes_per_sec: -1
+`,
+			err: config.ErrNegativeReadRate,
+		},
+		{
+			name: "negative write",
+			body: `
+server:
+  address: "example.com:9000"
+workspace:
+  path: ` + escapeYAML(absWorkspace()) + `
+rate_limit:
+  write_bytes_per_sec: -1
+`,
+			err: config.ErrNegativeWriteRate,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeYAML(t, "daemon.yaml", tc.body)
+			_, err := config.LoadDaemon(path)
+			require.Error(t, err)
+			assert.ErrorIs(t, err, tc.err)
+		})
+	}
 }
 
 func TestLoadDaemonMissingAddress(t *testing.T) {

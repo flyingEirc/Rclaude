@@ -1,6 +1,7 @@
 package syncer
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -8,6 +9,7 @@ import (
 	"syscall"
 
 	remotefsv1 "flyingEirc/Rclaude/api/proto/remotefs/v1"
+	"flyingEirc/Rclaude/pkg/ratelimit"
 	"flyingEirc/Rclaude/pkg/safepath"
 )
 
@@ -17,26 +19,31 @@ type HandleOptions struct {
 	Locker          *pathLocker
 	SelfWrites      *selfWriteFilter
 	SensitiveFilter *SensitiveFilter
+	ReadLimiter     *ratelimit.ByteLimiter
+	WriteLimiter    *ratelimit.ByteLimiter
 }
 
-func Handle(req *remotefsv1.FileRequest, opts HandleOptions) *remotefsv1.FileResponse {
+func Handle(ctx context.Context, req *remotefsv1.FileRequest, opts HandleOptions) *remotefsv1.FileResponse {
 	if req == nil {
 		return errResponse("", "syncer: nil request")
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
 	reqID := req.GetRequestId()
 	deps := depsFromOptions(opts)
 
-	if resp := handleReadLike(reqID, req.GetOperation(), opts); resp != nil {
+	if resp := handleReadLike(ctx, reqID, req.GetOperation(), opts); resp != nil {
 		return resp
 	}
-	return handleMutating(reqID, req.GetOperation(), opts, deps)
+	return handleMutating(ctx, reqID, req.GetOperation(), opts, deps)
 }
 
-func handleReadLike(reqID string, op any, opts HandleOptions) *remotefsv1.FileResponse {
+func handleReadLike(ctx context.Context, reqID string, op any, opts HandleOptions) *remotefsv1.FileResponse {
 	switch op := op.(type) {
 	case *remotefsv1.FileRequest_Read:
-		return handleRead(reqID, op.Read, opts)
+		return handleRead(ctx, reqID, op.Read, opts)
 	case *remotefsv1.FileRequest_Stat:
 		return handleStat(reqID, op.Stat, opts)
 	case *remotefsv1.FileRequest_ListDir:
@@ -46,10 +53,10 @@ func handleReadLike(reqID string, op any, opts HandleOptions) *remotefsv1.FileRe
 	}
 }
 
-func handleMutating(reqID string, op any, opts HandleOptions, deps writeDeps) *remotefsv1.FileResponse {
+func handleMutating(ctx context.Context, reqID string, op any, opts HandleOptions, deps writeDeps) *remotefsv1.FileResponse {
 	switch op := op.(type) {
 	case *remotefsv1.FileRequest_Write:
-		return handleWrite(reqID, op.Write, opts, deps)
+		return handleWrite(ctx, reqID, op.Write, opts, deps)
 	case *remotefsv1.FileRequest_Delete:
 		return handleDelete(reqID, op.Delete, opts, deps)
 	case *remotefsv1.FileRequest_Mkdir:
@@ -63,7 +70,7 @@ func handleMutating(reqID string, op any, opts HandleOptions, deps writeDeps) *r
 	}
 }
 
-func handleRead(reqID string, r *remotefsv1.ReadFileReq, opts HandleOptions) *remotefsv1.FileResponse {
+func handleRead(ctx context.Context, reqID string, r *remotefsv1.ReadFileReq, opts HandleOptions) *remotefsv1.FileResponse {
 	if r == nil {
 		return errResponse(reqID, "syncer: nil read request")
 	}
@@ -91,6 +98,9 @@ func handleRead(reqID string, r *remotefsv1.ReadFileReq, opts HandleOptions) *re
 	sliced := sliceContent(data, r.GetOffset(), r.GetLength())
 	if opts.MaxReadSize > 0 && int64(len(sliced)) > opts.MaxReadSize {
 		sliced = sliced[:opts.MaxReadSize]
+	}
+	if err := opts.ReadLimiter.WaitBytes(ctx, len(sliced)); err != nil {
+		return errResponse(reqID, formatErr("read", r.GetPath(), err))
 	}
 
 	return &remotefsv1.FileResponse{

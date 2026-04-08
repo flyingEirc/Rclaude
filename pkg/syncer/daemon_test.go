@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -254,6 +255,181 @@ func TestRun_SensitivePathsAreFiltered(t *testing.T) {
 		assert.NoError(t, err)
 	case <-time.After(2 * time.Second):
 		t.Fatal("Run did not return after cancellation")
+	}
+}
+
+func TestRun_ReadRateLimitDelaysResponse(t *testing.T) {
+	root := testutil.NewTempWorkspace(t, map[string]string{
+		"big.txt": string(bytes.Repeat([]byte("a"), 1500)),
+	})
+	server := testutil.NewRecordingServer()
+	dialer := testutil.NewBufconnServer(t, server)
+
+	restore := overrideDaemonTimings(t, time.Hour, 10*time.Millisecond, 20*time.Millisecond)
+	defer restore()
+
+	cfg := testDaemonConfig(root, "passthrough:///rate-read", "token")
+	cfg.RateLimit.ReadBytesPerSec = 1000
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- Run(ctx, RunOptions{
+			Config: cfg,
+			Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+			Dialer: dialer,
+		})
+	}()
+
+	waitForReady(t, server.WaitReady())
+	waitForRecordedMessage(t, server, func(msg *remotefsv1.DaemonMessage) bool {
+		return msg.GetFileTree() != nil
+	})
+
+	start := time.Now()
+	require.NoError(t, server.SendRequest(&remotefsv1.ServerMessage{
+		Msg: &remotefsv1.ServerMessage_Request{
+			Request: &remotefsv1.FileRequest{
+				RequestId: "read-rate",
+				Operation: &remotefsv1.FileRequest_Read{
+					Read: &remotefsv1.ReadFileReq{Path: "big.txt"},
+				},
+			},
+		},
+	}))
+	readResp := waitForRecordedMessage(t, server, func(msg *remotefsv1.DaemonMessage) bool {
+		resp := msg.GetResponse()
+		return resp != nil && resp.GetRequestId() == "read-rate"
+	}).GetResponse()
+	elapsed := time.Since(start)
+
+	require.True(t, readResp.GetSuccess(), readResp.GetError())
+	assert.Len(t, readResp.GetContent(), 1500)
+	assert.GreaterOrEqual(t, elapsed, 400*time.Millisecond)
+
+	cancel()
+	select {
+	case err := <-errCh:
+		assert.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after cancellation")
+	}
+}
+
+func TestRun_WriteRateLimitDelaysResponse(t *testing.T) {
+	root := testutil.NewTempWorkspace(t, map[string]string{})
+	server := testutil.NewRecordingServer()
+	dialer := testutil.NewBufconnServer(t, server)
+
+	restore := overrideDaemonTimings(t, time.Hour, 10*time.Millisecond, 20*time.Millisecond)
+	defer restore()
+
+	cfg := testDaemonConfig(root, "passthrough:///rate-write", "token")
+	cfg.RateLimit.WriteBytesPerSec = 1000
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- Run(ctx, RunOptions{
+			Config: cfg,
+			Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+			Dialer: dialer,
+		})
+	}()
+
+	waitForReady(t, server.WaitReady())
+	waitForRecordedMessage(t, server, func(msg *remotefsv1.DaemonMessage) bool {
+		return msg.GetFileTree() != nil
+	})
+
+	start := time.Now()
+	require.NoError(t, server.SendRequest(&remotefsv1.ServerMessage{
+		Msg: &remotefsv1.ServerMessage_Request{
+			Request: &remotefsv1.FileRequest{
+				RequestId: "write-rate",
+				Operation: &remotefsv1.FileRequest_Write{
+					Write: &remotefsv1.WriteFileReq{
+						Path:    "big.txt",
+						Content: bytes.Repeat([]byte("b"), 1500),
+					},
+				},
+			},
+		},
+	}))
+	writeResp := waitForRecordedMessage(t, server, func(msg *remotefsv1.DaemonMessage) bool {
+		resp := msg.GetResponse()
+		return resp != nil && resp.GetRequestId() == "write-rate"
+	}).GetResponse()
+	elapsed := time.Since(start)
+
+	require.True(t, writeResp.GetSuccess(), writeResp.GetError())
+	assert.GreaterOrEqual(t, elapsed, 400*time.Millisecond)
+
+	//nolint:gosec // test reads from a temp workspace fixture
+	data, err := os.ReadFile(filepath.Join(root, "big.txt"))
+	require.NoError(t, err)
+	assert.Len(t, data, 1500)
+
+	cancel()
+	select {
+	case err := <-errCh:
+		assert.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after cancellation")
+	}
+}
+
+func TestRun_CancelWhileRateLimitedReadUnblocks(t *testing.T) {
+	root := testutil.NewTempWorkspace(t, map[string]string{
+		"slow.txt": "ab",
+	})
+	server := testutil.NewRecordingServer()
+	dialer := testutil.NewBufconnServer(t, server)
+
+	restore := overrideDaemonTimings(t, time.Hour, 10*time.Millisecond, 20*time.Millisecond)
+	defer restore()
+
+	cfg := testDaemonConfig(root, "passthrough:///rate-cancel", "token")
+	cfg.RateLimit.ReadBytesPerSec = 1
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- Run(ctx, RunOptions{
+			Config: cfg,
+			Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+			Dialer: dialer,
+		})
+	}()
+
+	waitForReady(t, server.WaitReady())
+	waitForRecordedMessage(t, server, func(msg *remotefsv1.DaemonMessage) bool {
+		return msg.GetFileTree() != nil
+	})
+
+	require.NoError(t, server.SendRequest(&remotefsv1.ServerMessage{
+		Msg: &remotefsv1.ServerMessage_Request{
+			Request: &remotefsv1.FileRequest{
+				RequestId: "cancel-rate",
+				Operation: &remotefsv1.FileRequest_Read{
+					Read: &remotefsv1.ReadFileReq{Path: "slow.txt"},
+				},
+			},
+		},
+	}))
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-errCh:
+		assert.NoError(t, err)
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Run did not return promptly after cancellation during rate-limited read")
 	}
 }
 

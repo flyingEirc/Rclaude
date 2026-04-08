@@ -1,6 +1,7 @@
 package syncer
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -115,7 +116,7 @@ func closeAfterWrite(file *os.File, writeErr error) error {
 	return closeErr
 }
 
-func handleWrite(reqID string, r *remotefsv1.WriteFileReq, opts HandleOptions, deps writeDeps) *remotefsv1.FileResponse {
+func handleWrite(ctx context.Context, reqID string, r *remotefsv1.WriteFileReq, opts HandleOptions, deps writeDeps) *remotefsv1.FileResponse {
 	if r == nil {
 		return errResponse(reqID, "syncer: nil write request")
 	}
@@ -133,6 +134,9 @@ func handleWrite(reqID string, r *remotefsv1.WriteFileReq, opts HandleOptions, d
 
 	unlock := deps.locker.Lock(r.GetPath())
 	defer unlock()
+	if err := opts.WriteLimiter.WaitBytes(ctx, len(r.GetContent())); err != nil {
+		return errResponse(reqID, formatErr("write", r.GetPath(), err))
+	}
 	deps.selfWrites.Remember(r.GetPath())
 
 	file, err := openWriteTarget(abs, defaultWriteMode(r.GetMode()), r.GetAppend())

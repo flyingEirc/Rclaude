@@ -26,6 +26,8 @@ var (
 	ErrEmptyListen         = errors.New("config: listen is required")
 	ErrEmptyTokens         = errors.New("config: auth.tokens must contain at least one entry")
 	ErrMountpointNotAbs    = errors.New("config: fuse.mountpoint must be absolute")
+	ErrNegativeReadRate    = errors.New("config: rate_limit.read_bytes_per_sec must be >= 0")
+	ErrNegativeWriteRate   = errors.New("config: rate_limit.write_bytes_per_sec must be >= 0")
 )
 
 type ServerEndpoint struct {
@@ -44,11 +46,17 @@ type LogConfig struct {
 	Format string `mapstructure:"format"`
 }
 
+type RateLimitConfig struct {
+	ReadBytesPerSec  int64 `mapstructure:"read_bytes_per_sec"`
+	WriteBytesPerSec int64 `mapstructure:"write_bytes_per_sec"`
+}
+
 type DaemonConfig struct {
-	Server       ServerEndpoint `mapstructure:"server"`
-	Workspace    Workspace      `mapstructure:"workspace"`
-	Log          LogConfig      `mapstructure:"log"`
-	SelfWriteTTL time.Duration  `mapstructure:"self_write_ttl"`
+	Server       ServerEndpoint  `mapstructure:"server"`
+	Workspace    Workspace       `mapstructure:"workspace"`
+	Log          LogConfig       `mapstructure:"log"`
+	RateLimit    RateLimitConfig `mapstructure:"rate_limit"`
+	SelfWriteTTL time.Duration   `mapstructure:"self_write_ttl"`
 }
 
 type AuthConfig struct {
@@ -108,6 +116,12 @@ func (c *DaemonConfig) Validate() error {
 	}
 	if !filepath.IsAbs(c.Workspace.Path) {
 		return ErrWorkspacePathNotAbs
+	}
+	if c.RateLimit.ReadBytesPerSec < 0 {
+		return ErrNegativeReadRate
+	}
+	if c.RateLimit.WriteBytesPerSec < 0 {
+		return ErrNegativeWriteRate
 	}
 	if c.SelfWriteTTL <= 0 {
 		c.SelfWriteTTL = DefaultSelfWriteTTL
