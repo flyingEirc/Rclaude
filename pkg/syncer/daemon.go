@@ -15,6 +15,7 @@ import (
 	remotefsv1 "flyingEirc/Rclaude/api/proto/remotefs/v1"
 	"flyingEirc/Rclaude/pkg/config"
 	"flyingEirc/Rclaude/pkg/logx"
+	"flyingEirc/Rclaude/pkg/ratelimit"
 	"flyingEirc/Rclaude/pkg/transport"
 )
 
@@ -195,6 +196,8 @@ func serveStream(
 		Locker:          locker,
 		SelfWrites:      selfWrites,
 		SensitiveFilter: sensitiveFilter,
+		ReadLimiter:     ratelimit.NewBytesPerSecond(opts.Config.RateLimit.ReadBytesPerSec),
+		WriteLimiter:    ratelimit.NewBytesPerSecond(opts.Config.RateLimit.WriteBytesPerSec),
 	}
 
 	group, groupCtx := errgroup.WithContext(ctx)
@@ -275,7 +278,7 @@ func runRecvLoop(
 
 		switch body := msg.GetMsg().(type) {
 		case *remotefsv1.ServerMessage_Request:
-			response := Handle(body.Request, handleOpts)
+			response := Handle(ctx, body.Request, handleOpts)
 			if !queueDaemonMessage(ctx, sendQueue, &remotefsv1.DaemonMessage{
 				Msg: &remotefsv1.DaemonMessage_Response{Response: response},
 			}) {

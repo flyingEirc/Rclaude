@@ -1,6 +1,7 @@
 package syncer
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -10,10 +11,15 @@ import (
 	"github.com/stretchr/testify/require"
 
 	remotefsv1 "flyingEirc/Rclaude/api/proto/remotefs/v1"
+	"flyingEirc/Rclaude/pkg/ratelimit"
 )
 
+func callHandle(req *remotefsv1.FileRequest, opts HandleOptions) *remotefsv1.FileResponse {
+	return Handle(context.Background(), req, opts)
+}
+
 func TestHandle_NilRequest(t *testing.T) {
-	resp := Handle(nil, HandleOptions{Root: t.TempDir()})
+	resp := Handle(context.Background(), nil, HandleOptions{Root: t.TempDir()})
 	require.NotNil(t, resp)
 	assert.False(t, resp.GetSuccess())
 	assert.Contains(t, resp.GetError(), "nil request")
@@ -29,7 +35,7 @@ func TestHandle_Read_Full(t *testing.T) {
 			Read: &remotefsv1.ReadFileReq{Path: "f.txt"},
 		},
 	}
-	resp := Handle(req, HandleOptions{Root: root})
+	resp := callHandle(req, HandleOptions{Root: root})
 	require.True(t, resp.GetSuccess(), resp.GetError())
 	assert.Equal(t, "r1", resp.GetRequestId())
 	assert.Equal(t, []byte("hello world"), resp.GetContent())
@@ -54,7 +60,7 @@ func TestHandle_Read_OffsetAndLength(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			resp := Handle(&remotefsv1.FileRequest{
+			resp := callHandle(&remotefsv1.FileRequest{
 				RequestId: "x",
 				Operation: &remotefsv1.FileRequest_Read{
 					Read: &remotefsv1.ReadFileReq{
@@ -74,7 +80,7 @@ func TestHandle_Read_MaxSizeCap(t *testing.T) {
 	root := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(root, "big.bin"), []byte("0123456789"), 0o600))
 
-	resp := Handle(&remotefsv1.FileRequest{
+	resp := callHandle(&remotefsv1.FileRequest{
 		Operation: &remotefsv1.FileRequest_Read{
 			Read: &remotefsv1.ReadFileReq{Path: "big.bin"},
 		},
@@ -83,9 +89,51 @@ func TestHandle_Read_MaxSizeCap(t *testing.T) {
 	assert.Equal(t, []byte("0123"), resp.GetContent())
 }
 
+func TestHandle_Read_RespectsRateLimit(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "f.txt"), make([]byte, 1500), 0o600))
+
+	start := time.Now()
+	resp := Handle(context.Background(), &remotefsv1.FileRequest{
+		Operation: &remotefsv1.FileRequest_Read{
+			Read: &remotefsv1.ReadFileReq{Path: "f.txt"},
+		},
+	}, HandleOptions{
+		Root:        root,
+		ReadLimiter: ratelimit.NewBytesPerSecond(1000),
+	})
+	elapsed := time.Since(start)
+
+	require.True(t, resp.GetSuccess(), resp.GetError())
+	assert.GreaterOrEqual(t, elapsed, 400*time.Millisecond)
+}
+
+func TestHandle_Read_CanceledWhileRateLimited(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "f.txt"), []byte("ab"), 0o600))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	resp := Handle(ctx, &remotefsv1.FileRequest{
+		Operation: &remotefsv1.FileRequest_Read{
+			Read: &remotefsv1.ReadFileReq{Path: "f.txt"},
+		},
+	}, HandleOptions{
+		Root:        root,
+		ReadLimiter: ratelimit.NewBytesPerSecond(1),
+	})
+	assert.False(t, resp.GetSuccess())
+	assert.Contains(t, resp.GetError(), "context canceled")
+}
+
 func TestHandle_Read_PathEscape(t *testing.T) {
 	root := t.TempDir()
-	resp := Handle(&remotefsv1.FileRequest{
+	resp := callHandle(&remotefsv1.FileRequest{
 		Operation: &remotefsv1.FileRequest_Read{
 			Read: &remotefsv1.ReadFileReq{Path: "../etc/passwd"},
 		},
@@ -96,7 +144,7 @@ func TestHandle_Read_PathEscape(t *testing.T) {
 
 func TestHandle_Read_Missing(t *testing.T) {
 	root := t.TempDir()
-	resp := Handle(&remotefsv1.FileRequest{
+	resp := callHandle(&remotefsv1.FileRequest{
 		Operation: &remotefsv1.FileRequest_Read{
 			Read: &remotefsv1.ReadFileReq{Path: "missing.txt"},
 		},
@@ -109,7 +157,7 @@ func TestHandle_Stat_File(t *testing.T) {
 	root := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(root, "f.txt"), []byte("abc"), 0o600))
 
-	resp := Handle(&remotefsv1.FileRequest{
+	resp := callHandle(&remotefsv1.FileRequest{
 		RequestId: "s1",
 		Operation: &remotefsv1.FileRequest_Stat{
 			Stat: &remotefsv1.StatReq{Path: "f.txt"},
@@ -127,7 +175,7 @@ func TestHandle_Stat_Dir(t *testing.T) {
 	root := t.TempDir()
 	require.NoError(t, os.Mkdir(filepath.Join(root, "d"), 0o750))
 
-	resp := Handle(&remotefsv1.FileRequest{
+	resp := callHandle(&remotefsv1.FileRequest{
 		Operation: &remotefsv1.FileRequest_Stat{
 			Stat: &remotefsv1.StatReq{Path: "d"},
 		},
@@ -138,7 +186,7 @@ func TestHandle_Stat_Dir(t *testing.T) {
 
 func TestHandle_Stat_Missing(t *testing.T) {
 	root := t.TempDir()
-	resp := Handle(&remotefsv1.FileRequest{
+	resp := callHandle(&remotefsv1.FileRequest{
 		Operation: &remotefsv1.FileRequest_Stat{
 			Stat: &remotefsv1.StatReq{Path: "nope"},
 		},
@@ -153,7 +201,7 @@ func TestHandle_ListDir(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(root, "b.txt"), []byte(""), 0o600))
 	require.NoError(t, os.Mkdir(filepath.Join(root, "d"), 0o750))
 
-	resp := Handle(&remotefsv1.FileRequest{
+	resp := callHandle(&remotefsv1.FileRequest{
 		Operation: &remotefsv1.FileRequest_ListDir{
 			ListDir: &remotefsv1.ListDirReq{Path: ""},
 		},
@@ -173,7 +221,7 @@ func TestHandle_ListDir_Subdir(t *testing.T) {
 	require.NoError(t, os.Mkdir(sub, 0o750))
 	require.NoError(t, os.WriteFile(filepath.Join(sub, "inner.txt"), []byte(""), 0o600))
 
-	resp := Handle(&remotefsv1.FileRequest{
+	resp := callHandle(&remotefsv1.FileRequest{
 		Operation: &remotefsv1.FileRequest_ListDir{
 			ListDir: &remotefsv1.ListDirReq{Path: "sub"},
 		},
@@ -195,7 +243,7 @@ func TestHandle_ReadLikeSensitivePathsReturnNotExist(t *testing.T) {
 	require.NoError(t, err)
 	opts := HandleOptions{Root: root, SensitiveFilter: filter}
 
-	readResp := Handle(&remotefsv1.FileRequest{
+	readResp := callHandle(&remotefsv1.FileRequest{
 		Operation: &remotefsv1.FileRequest_Read{
 			Read: &remotefsv1.ReadFileReq{Path: ".env"},
 		},
@@ -203,7 +251,7 @@ func TestHandle_ReadLikeSensitivePathsReturnNotExist(t *testing.T) {
 	assert.False(t, readResp.GetSuccess())
 	assert.Contains(t, readResp.GetError(), "no such file")
 
-	statResp := Handle(&remotefsv1.FileRequest{
+	statResp := callHandle(&remotefsv1.FileRequest{
 		Operation: &remotefsv1.FileRequest_Stat{
 			Stat: &remotefsv1.StatReq{Path: ".ssh/id_ed25519"},
 		},
@@ -211,7 +259,7 @@ func TestHandle_ReadLikeSensitivePathsReturnNotExist(t *testing.T) {
 	assert.False(t, statResp.GetSuccess())
 	assert.Contains(t, statResp.GetError(), "no such file")
 
-	listResp := Handle(&remotefsv1.FileRequest{
+	listResp := callHandle(&remotefsv1.FileRequest{
 		Operation: &remotefsv1.FileRequest_ListDir{
 			ListDir: &remotefsv1.ListDirReq{Path: ""},
 		},
@@ -229,7 +277,7 @@ func TestHandle_Read_SensitiveSymlinkAliasReturnsNotExist(t *testing.T) {
 	filter, err := NewSensitiveFilter(nil)
 	require.NoError(t, err)
 
-	resp := Handle(&remotefsv1.FileRequest{
+	resp := callHandle(&remotefsv1.FileRequest{
 		Operation: &remotefsv1.FileRequest_Read{
 			Read: &remotefsv1.ReadFileReq{Path: "visible.txt"},
 		},
@@ -244,7 +292,7 @@ func TestHandle_Read_SensitiveSymlinkAliasReturnsNotExist(t *testing.T) {
 
 func TestHandle_ListDir_Missing(t *testing.T) {
 	root := t.TempDir()
-	resp := Handle(&remotefsv1.FileRequest{
+	resp := callHandle(&remotefsv1.FileRequest{
 		Operation: &remotefsv1.FileRequest_ListDir{
 			ListDir: &remotefsv1.ListDirReq{Path: "no-such"},
 		},
@@ -256,35 +304,35 @@ func TestHandle_ListDir_Missing(t *testing.T) {
 func TestHandle_WriteDeleteMkdirRenameTruncate(t *testing.T) {
 	root := t.TempDir()
 
-	writeResp := Handle(&remotefsv1.FileRequest{
+	writeResp := callHandle(&remotefsv1.FileRequest{
 		Operation: &remotefsv1.FileRequest_Write{
 			Write: &remotefsv1.WriteFileReq{Path: "f.txt", Content: []byte("hello")},
 		},
 	}, HandleOptions{Root: root, Locker: newPathLocker(), SelfWrites: newSelfWriteFilter(time.Second)})
 	require.True(t, writeResp.GetSuccess(), writeResp.GetError())
 
-	mkdirResp := Handle(&remotefsv1.FileRequest{
+	mkdirResp := callHandle(&remotefsv1.FileRequest{
 		Operation: &remotefsv1.FileRequest_Mkdir{
 			Mkdir: &remotefsv1.MkdirReq{Path: "dir"},
 		},
 	}, HandleOptions{Root: root, Locker: newPathLocker(), SelfWrites: newSelfWriteFilter(time.Second)})
 	require.True(t, mkdirResp.GetSuccess(), mkdirResp.GetError())
 
-	renameResp := Handle(&remotefsv1.FileRequest{
+	renameResp := callHandle(&remotefsv1.FileRequest{
 		Operation: &remotefsv1.FileRequest_Rename{
 			Rename: &remotefsv1.RenameReq{OldPath: "f.txt", NewPath: "dir/f.txt"},
 		},
 	}, HandleOptions{Root: root, Locker: newPathLocker(), SelfWrites: newSelfWriteFilter(time.Second)})
 	require.True(t, renameResp.GetSuccess(), renameResp.GetError())
 
-	truncateResp := Handle(&remotefsv1.FileRequest{
+	truncateResp := callHandle(&remotefsv1.FileRequest{
 		Operation: &remotefsv1.FileRequest_Truncate{
 			Truncate: &remotefsv1.TruncateReq{Path: "dir/f.txt", Size: 2},
 		},
 	}, HandleOptions{Root: root, Locker: newPathLocker(), SelfWrites: newSelfWriteFilter(time.Second)})
 	require.True(t, truncateResp.GetSuccess(), truncateResp.GetError())
 
-	deleteResp := Handle(&remotefsv1.FileRequest{
+	deleteResp := callHandle(&remotefsv1.FileRequest{
 		Operation: &remotefsv1.FileRequest_Delete{
 			Delete: &remotefsv1.DeleteReq{Path: "dir/f.txt"},
 		},
@@ -293,7 +341,39 @@ func TestHandle_WriteDeleteMkdirRenameTruncate(t *testing.T) {
 }
 
 func TestHandle_UnknownOperation(t *testing.T) {
-	resp := Handle(&remotefsv1.FileRequest{RequestId: "u"}, HandleOptions{Root: t.TempDir()})
+	resp := callHandle(&remotefsv1.FileRequest{RequestId: "u"}, HandleOptions{Root: t.TempDir()})
 	assert.False(t, resp.GetSuccess())
 	assert.Contains(t, resp.GetError(), "unknown")
+}
+
+func TestHandle_NonByteOpsIgnoreCanceledContext(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "f.txt"), []byte("hello"), 0o600))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	statResp := Handle(ctx, &remotefsv1.FileRequest{
+		Operation: &remotefsv1.FileRequest_Stat{
+			Stat: &remotefsv1.StatReq{Path: "f.txt"},
+		},
+	}, HandleOptions{
+		Root:        root,
+		ReadLimiter: ratelimit.NewBytesPerSecond(1),
+	})
+	require.True(t, statResp.GetSuccess(), statResp.GetError())
+
+	truncateResp := Handle(ctx, &remotefsv1.FileRequest{
+		Operation: &remotefsv1.FileRequest_Truncate{
+			Truncate: &remotefsv1.TruncateReq{Path: "f.txt", Size: 2},
+		},
+	}, HandleOptions{
+		Root:         root,
+		Locker:       newPathLocker(),
+		SelfWrites:   newSelfWriteFilter(time.Second),
+		WriteLimiter: ratelimit.NewBytesPerSecond(1),
+	})
+	require.True(t, truncateResp.GetSuccess(), truncateResp.GetError())
 }

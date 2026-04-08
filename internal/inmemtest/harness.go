@@ -425,7 +425,7 @@ func handleRequest(
 		return true
 	}
 
-	resp = syncer.Handle(req, handleOpts)
+	resp = syncer.Handle(ctx, req, handleOpts)
 	resp, stop, send := user.applyAfterAction(ctx, req, resp)
 	if stop {
 		return false

@@ -1,6 +1,7 @@
 package syncer
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	remotefsv1 "flyingEirc/Rclaude/api/proto/remotefs/v1"
+	"flyingEirc/Rclaude/pkg/ratelimit"
 )
 
 func newWriteOpts(t *testing.T) (HandleOptions, writeDeps, string) {
@@ -31,7 +33,7 @@ func TestHandleWrite_CreateAndOverwriteAtOffset(t *testing.T) {
 	t.Parallel()
 
 	opts, deps, root := newWriteOpts(t)
-	resp := handleWrite("r1", &remotefsv1.WriteFileReq{
+	resp := handleWrite(context.Background(), "r1", &remotefsv1.WriteFileReq{
 		Path:    "a.txt",
 		Content: []byte("hello"),
 		Mode:    0o644,
@@ -39,7 +41,7 @@ func TestHandleWrite_CreateAndOverwriteAtOffset(t *testing.T) {
 	require.True(t, resp.GetSuccess(), resp.GetError())
 	assert.Equal(t, "a.txt", resp.GetInfo().GetPath())
 
-	resp = handleWrite("r2", &remotefsv1.WriteFileReq{
+	resp = handleWrite(context.Background(), "r2", &remotefsv1.WriteFileReq{
 		Path:    "a.txt",
 		Content: []byte("X"),
 		Offset:  1,
@@ -59,7 +61,7 @@ func TestHandleWrite_Append(t *testing.T) {
 	opts, deps, root := newWriteOpts(t)
 	require.NoError(t, os.WriteFile(filepath.Join(root, "a.txt"), []byte("hi"), 0o600))
 
-	resp := handleWrite("r1", &remotefsv1.WriteFileReq{
+	resp := handleWrite(context.Background(), "r1", &remotefsv1.WriteFileReq{
 		Path:    "a.txt",
 		Content: []byte("!"),
 		Append:  true,
@@ -76,7 +78,7 @@ func TestHandleWrite_InvalidOffset(t *testing.T) {
 	t.Parallel()
 
 	opts, deps, _ := newWriteOpts(t)
-	resp := handleWrite("r1", &remotefsv1.WriteFileReq{
+	resp := handleWrite(context.Background(), "r1", &remotefsv1.WriteFileReq{
 		Path:   "a.txt",
 		Offset: -1,
 	}, opts, deps)
@@ -90,7 +92,7 @@ func TestHandleMkdirDeleteRenameTruncate(t *testing.T) {
 	opts, deps, root := newWriteOpts(t)
 
 	require.True(t, handleMkdir("m1", &remotefsv1.MkdirReq{Path: "dir"}, opts, deps).GetSuccess())
-	require.True(t, handleWrite("w1", &remotefsv1.WriteFileReq{
+	require.True(t, handleWrite(context.Background(), "w1", &remotefsv1.WriteFileReq{
 		Path:    "dir/file.txt",
 		Content: []byte("hello"),
 	}, opts, deps).GetSuccess())
@@ -119,6 +121,65 @@ func TestHandleMkdirDeleteRenameTruncate(t *testing.T) {
 
 	_, err = os.Stat(filepath.Join(root, "dir", "renamed.txt"))
 	assert.ErrorIs(t, err, os.ErrNotExist)
+}
+
+func TestHandleWrite_RespectsRateLimit(t *testing.T) {
+	t.Parallel()
+
+	opts, deps, root := newWriteOpts(t)
+	opts.WriteLimiter = ratelimit.NewBytesPerSecond(1000)
+
+	start := time.Now()
+	resp := handleWrite(context.Background(), "w1", &remotefsv1.WriteFileReq{
+		Path:    "a.txt",
+		Content: make([]byte, 1500),
+	}, opts, deps)
+	elapsed := time.Since(start)
+
+	require.True(t, resp.GetSuccess(), resp.GetError())
+	assert.GreaterOrEqual(t, elapsed, 400*time.Millisecond)
+
+	_, err := os.Stat(filepath.Join(root, "a.txt"))
+	require.NoError(t, err)
+}
+
+func TestHandleWrite_CanceledWhileRateLimited(t *testing.T) {
+	t.Parallel()
+
+	opts, deps, root := newWriteOpts(t)
+	opts.WriteLimiter = ratelimit.NewBytesPerSecond(1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	resp := handleWrite(ctx, "w1", &remotefsv1.WriteFileReq{
+		Path:    "a.txt",
+		Content: []byte("ab"),
+	}, opts, deps)
+	assert.False(t, resp.GetSuccess())
+	assert.Contains(t, resp.GetError(), "context canceled")
+
+	_, err := os.Stat(filepath.Join(root, "a.txt"))
+	assert.ErrorIs(t, err, os.ErrNotExist)
+}
+
+func TestHandleWrite_CreateEmptyContentSkipsRateLimit(t *testing.T) {
+	t.Parallel()
+
+	opts, deps, root := newWriteOpts(t)
+	opts.WriteLimiter = ratelimit.NewBytesPerSecond(1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	resp := handleWrite(ctx, "w1", &remotefsv1.WriteFileReq{
+		Path: "a.txt",
+		Mode: 0o644,
+	}, opts, deps)
+	require.True(t, resp.GetSuccess(), resp.GetError())
+
+	_, err := os.Stat(filepath.Join(root, "a.txt"))
+	require.NoError(t, err)
 }
 
 func TestHandleRename_UnsafePath(t *testing.T) {
@@ -163,7 +224,7 @@ func TestHandleWriteOps_DenySensitivePaths(t *testing.T) {
 	}{
 		{
 			name: "write sensitive file",
-			resp: handleWrite("w1", &remotefsv1.WriteFileReq{Path: ".env", Content: []byte("x")}, opts, deps),
+			resp: handleWrite(context.Background(), "w1", &remotefsv1.WriteFileReq{Path: ".env", Content: []byte("x")}, opts, deps),
 		},
 		{
 			name: "mkdir sensitive dir",
@@ -204,7 +265,7 @@ func TestHandleWriteAndTruncate_DenySensitiveSymlinkAliases(t *testing.T) {
 	require.NoError(t, os.Symlink(".env", filepath.Join(root, "visible.txt")))
 	require.NoError(t, os.Symlink(".env.new", filepath.Join(root, "future.txt")))
 
-	writeResp := handleWrite("w1", &remotefsv1.WriteFileReq{
+	writeResp := handleWrite(context.Background(), "w1", &remotefsv1.WriteFileReq{
 		Path:    "visible.txt",
 		Content: []byte("mutated"),
 	}, opts, deps)
@@ -218,7 +279,7 @@ func TestHandleWriteAndTruncate_DenySensitiveSymlinkAliases(t *testing.T) {
 	assert.False(t, truncateResp.GetSuccess())
 	assert.Contains(t, truncateResp.GetError(), "permission denied")
 
-	createResp := handleWrite("w2", &remotefsv1.WriteFileReq{
+	createResp := handleWrite(context.Background(), "w2", &remotefsv1.WriteFileReq{
 		Path:    "future.txt",
 		Content: []byte("new secret"),
 	}, opts, deps)
