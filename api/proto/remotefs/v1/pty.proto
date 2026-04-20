@@ -1,0 +1,72 @@
+syntax = "proto3";
+
+package remotefs.v1;
+
+option go_package = "flyingEirc/Rclaude/api/proto/remotefs/v1;remotefsv1";
+
+service RemotePTY {
+  // Attach establishes a PTY session over a bidirectional stream.
+  // The first client frame must be attach, and the first server frame must be
+  // attached or error.
+  rpc Attach(stream ClientFrame) returns (stream ServerFrame);
+}
+
+message ClientFrame {
+  oneof payload {
+    AttachReq attach = 1;
+    bytes stdin = 2;
+    Resize resize = 3;
+    Detach detach = 4;
+  }
+}
+
+message AttachReq {
+  string session_id = 1;
+  Resize initial_size = 2;
+  string term = 3;
+  repeated string extra_env = 15;
+}
+
+message Resize {
+  uint32 cols = 1;
+  uint32 rows = 2;
+  uint32 x_pixel = 3;
+  uint32 y_pixel = 4;
+}
+
+message Detach {}
+
+message ServerFrame {
+  oneof payload {
+    Attached attached = 1;
+    bytes stdout = 2;
+    Exited exited = 3;
+    Error error = 4;
+  }
+}
+
+message Attached {
+  string session_id = 1;
+  string cwd = 2;
+}
+
+message Exited {
+  int32 code = 1;
+  uint32 signal = 2;
+}
+
+message Error {
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    KIND_UNAUTHENTICATED = 1;
+    KIND_DAEMON_NOT_CONNECTED = 2;
+    KIND_SESSION_BUSY = 3;
+    KIND_SPAWN_FAILED = 4;
+    KIND_PROTOCOL = 5;
+    KIND_RATE_LIMITED = 6;
+    KIND_INTERNAL = 99;
+  }
+
+  Kind kind = 1;
+  string message = 2;
+}

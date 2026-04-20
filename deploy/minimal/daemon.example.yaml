@@ -1,0 +1,16 @@
+# 同一份 daemon 配置既给 `rclaude-daemon` 用，也给 `rclaude-claude` 用。
+server:
+  address: "SERVER_IP:9326"
+  token: "tok-demo"
+workspace:
+  path: "/absolute/path/to/workspace"
+  exclude:
+    - ".git"
+    - "node_modules"
+    - "vendor"
+log:
+  level: "info"
+  format: "text"
+pty:
+  # Keep this aligned with server.yaml if you lower the server-side frame cap.
+  frame_max_bytes: 65536

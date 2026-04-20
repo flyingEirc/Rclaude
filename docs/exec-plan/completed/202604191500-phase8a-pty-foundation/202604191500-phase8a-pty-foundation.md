@@ -1,0 +1,23 @@
+# Phase 8a — Remote PTY 基础包与协议（完成摘要）
+
+- 完成状态：done
+- 验收结果：
+  - 本机无 `make`，改用等价命令完成质量门：
+    - `C:\Users\stillmoke\go\bin\gofumpt.exe -l -w .`
+    - `C:\Users\stillmoke\go\bin\gci.exe write --section standard --section default --section "prefix(flyingEirc/Rclaude)" .`
+    - `C:\Users\stillmoke\go\bin\golangci-lint.exe run ./...`
+    - `go test -count=1 -timeout 120s ./...`
+  - `golangci-lint run ./...` 输出 `0 issues.`
+  - `go test -count=1 -timeout 120s ./...` 全绿
+  - 三平台编译通过：`GOOS=windows/linux/darwin GOARCH=amd64 go build ./...`
+- 与 plan 的偏离：
+  - `pkg/ptyclient` resize 最终使用 `golang.org/x/sys/unix` / `golang.org/x/sys/windows`，未保留计划中的 `golang.org/x/term`。原因是本阶段只需要窗口尺寸查询，不需要终端 raw mode 能力。
+  - 为避免主工作树脏状态与 `fmt` 噪音污染，实际在 clean worktree `E:\Rclaude\.codex-phase8a` 完成实现与验收。
+  - 为通过整仓 `lint/test`，引入了少量 phase 外但低风险的 mechanical/test 兼容改动：`internal/testutil/bufconn.go`、`pkg/contentcache/cache.go`、`pkg/contentcache/cache_test.go`、`pkg/logx/logx_test.go`、`pkg/safepath/safepath.go`、`pkg/syncer/daemon_test.go`、`pkg/syncer/handle_test.go`。
+- 代码审查：
+  - 独立 codereview 首轮发现两项高优先级问题：`ptyclient` 握手阶段取消不可达、`ResolveCwd` 放过归一化路径穿越。
+  - 修复后复审结论：`no findings for the re-review`。
+- 遗留问题：
+  - `pkg/ptyclient` 首帧 `Recv` goroutine 的及时回收仍依赖具体 `Stream` 实现在 `CloseSend()` 或上层 context 取消后能够解阻；当前不构成 blocker，但 Phase 8b 联调时需要继续观察。
+  - Windows resize 路径当前只有编译验证，没有真实运行期测试。
+- 后续阶段入口：在 `docs/exec-plan/active/` 下新建 `...-phase8b-pty-service-wiring/` 三件套，继续做 `RemotePTY.Attach` service 装配、session/ratelimit 接入与集成验证。

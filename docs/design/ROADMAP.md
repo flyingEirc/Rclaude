@@ -47,6 +47,7 @@
 | Phase 5 | 集成测试 | 端到端 + 异常场景 + 多用户隔离 | FUSE 路径访问可验证 |
 | Phase 6 | 性能与安全优化 | 预取、限流、敏感文件过滤、离线降级 | 大部分读请求命中缓存 |
 | Phase 7 | 部署与运维 | Docker、systemd、运行说明 | 可在 Linux Server 侧部署 |
+| Phase 8 | Remote PTY | 交互式 PTY 主线 | 可从本地附着到 server 侧 PTY |
 
 ## 各 Phase 范围摘要
 
@@ -94,6 +95,14 @@
 - Docker 构建
 - systemd 单元
 - 部署与排障文档
+
+### Phase 8 — Remote PTY
+- 在 `RemoteFS` 文件面之外补齐交互式 PTY 主线，让用户可从本地附着到 server 侧 PTY
+- 继续复用既有 token -> `user_id` 身份映射，并把远端工作目录约束在 `/workspace/{user_id}`
+- 阶段边界：
+  - Phase 8a：协议与基础库
+  - Phase 8b：服务装配与联调
+  - Phase 8c：CLI、smoke、deploy 示例与文档收口
 
 ## 关键风险
 

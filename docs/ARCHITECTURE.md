@@ -156,3 +156,22 @@ E:\Rclaude\
 - `tools/fuse-smoke.sh`
 
 该脚本用于对已挂载的 `/workspace/{user_id}` 视图执行最小 `ls` / `cat` / 写文件 / `mv` / `rm` 验证。
+
+## 八、Phase 8 Remote PTY 补充约束
+
+Phase 8 在既有 `RemoteFS` 文件面之外，引入了一条并行的交互面链路：`RemotePTY.Attach`。这一层的目标不是替代 FUSE，而是把“本地终端 <-> Server 侧 PTY 进程”的字节流与窗口事件桥接出来，让远端 `claude` 或 shell 直接工作在 `/workspace/{user_id}` 视图之上。
+
+当前架构边界约束如下：
+
+- `RemoteFS` 继续负责 daemon 与 server 间的文件树、读写请求和变更同步。
+- `RemotePTY` 只负责 PTY attach、stdin/stdout、resize、detach、exit/error，不承载文件协议。
+- `pkg/ptyclient/` 只负责本地终端与 gRPC 双向流桥接；拨号配置复用 daemon YAML 中的 `server.address` / `server.token`，并可读取可选 `pty.frame_max_bytes` 以对齐 client 侧 stdin 分帧上限。
+- `pkg/ptyhost/` 只负责 server 侧 PTY 生命周期、cwd / env / binary 策略和 resize / shutdown。
+- `pkg/config` 里的 `pty` 配置块只在 server 端生效，用来限制 `binary`、`workspace_root`、`env_passthrough`、帧大小与限流。
+
+手工验收入口也因此拆成两条：
+
+- `deploy/minimal/smoke-remote.sh`：验证 `/workspace/{user_id}` 文件面是否可读写。
+- `tools/pty-smoke.sh` / `deploy/minimal/start-pty.sh`：验证 `RemotePTY.Attach` 是否可附着、是否具备 PTY，以及真实 `claude` 入口是否能人工验收。
+
+这条补充约束要求后续实现始终保持“文件面”和“交互面”分层清晰：不把 PTY 控制语义塞回 `RemoteFS`，也不让 `RemotePTY` 直接承担文件同步职责。

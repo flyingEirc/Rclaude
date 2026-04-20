@@ -130,3 +130,72 @@ func TestManagerGetPrunesExpiredOfflineSession(t *testing.T) {
 	assert.False(t, ok)
 	assert.Empty(t, manager.UserIDs())
 }
+
+func TestManagerLookupDaemonReturnsLiveSession(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager()
+	current := NewSession("user-1")
+	require.NoError(t, current.Bootstrap(&remotefsv1.DaemonMessage{
+		Msg: &remotefsv1.DaemonMessage_FileTree{FileTree: &remotefsv1.FileTree{}},
+	}))
+	_, err := manager.Register(current)
+	require.NoError(t, err)
+
+	daemon, ok := manager.LookupDaemon("user-1")
+	require.True(t, ok)
+	assert.Equal(t, "user-1", daemon.UserID())
+	assert.False(t, daemon.LastHeartbeat().IsZero())
+}
+
+func TestManagerLookupDaemonSkipsOfflineSnapshot(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(ManagerOptions{OfflineReadOnlyTTL: time.Minute})
+	current := NewSession("user-1")
+	require.NoError(t, current.Bootstrap(&remotefsv1.DaemonMessage{
+		Msg: &remotefsv1.DaemonMessage_FileTree{FileTree: &remotefsv1.FileTree{}},
+	}))
+	_, err := manager.Register(current)
+	require.NoError(t, err)
+
+	current.closeWithError(nil)
+	manager.HandleDisconnect(current, nil)
+
+	daemon, ok := manager.LookupDaemon("user-1")
+	assert.Nil(t, daemon)
+	assert.False(t, ok)
+}
+
+func TestManagerRegisterPTYRequiresMatchingTokenToRelease(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager()
+
+	firstID, err := manager.RegisterPTY("user-1")
+	require.NoError(t, err)
+	assert.NotEmpty(t, firstID)
+
+	secondID, err := manager.RegisterPTY("user-1")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrPTYBusy)
+	assert.Empty(t, secondID)
+
+	assert.False(t, manager.UnregisterPTY("user-1", "wrong-token"))
+
+	thirdID, err := manager.RegisterPTY("user-1")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrPTYBusy)
+	assert.Empty(t, thirdID)
+
+	assert.True(t, manager.UnregisterPTY("user-1", firstID))
+	assert.False(t, manager.UnregisterPTY("user-1", firstID))
+
+	nextID, err := manager.RegisterPTY("user-1")
+	require.NoError(t, err)
+	assert.NotEmpty(t, nextID)
+	assert.NotEqual(t, firstID, nextID)
+
+	assert.False(t, manager.UnregisterPTY("user-1", firstID))
+	assert.True(t, manager.UnregisterPTY("user-1", nextID))
+}

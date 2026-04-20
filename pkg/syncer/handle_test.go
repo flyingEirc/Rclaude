@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +17,17 @@ import (
 
 func callHandle(req *remotefsv1.FileRequest, opts HandleOptions) *remotefsv1.FileResponse {
 	return Handle(context.Background(), req, opts)
+}
+
+func assertNotExistError(t *testing.T, msg string) {
+	t.Helper()
+
+	lower := strings.ToLower(msg)
+	assert.True(t,
+		strings.Contains(lower, "no such file") ||
+			strings.Contains(lower, "cannot find the file specified"),
+		"expected not-exist style error, got %q", msg,
+	)
 }
 
 func TestHandle_NilRequest(t *testing.T) {
@@ -249,7 +261,7 @@ func TestHandle_ReadLikeSensitivePathsReturnNotExist(t *testing.T) {
 		},
 	}, opts)
 	assert.False(t, readResp.GetSuccess())
-	assert.Contains(t, readResp.GetError(), "no such file")
+	assertNotExistError(t, readResp.GetError())
 
 	statResp := callHandle(&remotefsv1.FileRequest{
 		Operation: &remotefsv1.FileRequest_Stat{
@@ -257,7 +269,7 @@ func TestHandle_ReadLikeSensitivePathsReturnNotExist(t *testing.T) {
 		},
 	}, opts)
 	assert.False(t, statResp.GetSuccess())
-	assert.Contains(t, statResp.GetError(), "no such file")
+	assertNotExistError(t, statResp.GetError())
 
 	listResp := callHandle(&remotefsv1.FileRequest{
 		Operation: &remotefsv1.FileRequest_ListDir{
@@ -287,7 +299,7 @@ func TestHandle_Read_SensitiveSymlinkAliasReturnsNotExist(t *testing.T) {
 	})
 
 	assert.False(t, resp.GetSuccess())
-	assert.Contains(t, resp.GetError(), "no such file")
+	assertNotExistError(t, resp.GetError())
 }
 
 func TestHandle_ListDir_Missing(t *testing.T) {

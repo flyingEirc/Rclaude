@@ -1,23 +1,27 @@
 # reference
 
-本目录用于沉淀第三方工具、框架、SDK、API、协议和官方资料的参考文档。
+This directory stores version-pinned reference notes for third-party tools, frameworks, SDKs, APIs, and protocol specs.
 
-## 文档定位
+## Current entries
 
-- 记录外部依赖的版本、能力边界、兼容性结论和官方来源。
-- 为实现阶段提供准确、版本一致的外部上下文。
-- 不替代 design 文档，不承载项目内部架构决策。
+- `pty-protocol.md`: quick reference for the Remote PTY service, frame layout, error enums, and handshake order.
 
-## 应记录的信息
+## Positioning
 
-- 第三方名称与版本
-- 官方文档地址或来源说明
-- 当前项目采用方式
-- 关键限制、坑点与兼容性结论
-- 与本项目实现相关的最小必要示例
+- Record dependency versions, capability boundaries, compatibility notes, and official sources.
+- Provide accurate, version-consistent external context for implementation work.
+- Do not replace design docs or carry project-internal architecture decisions.
 
-## 约束
+## Required content
 
-- 涉及第三方库、框架、SDK 或 API 的实现前，应先补齐或核对 reference 文档。
-- reference 文档必须标明版本，不得只写“最新版”或模糊表述。
-- 若外部能力变更影响设计或实现，必须同步更新 design 或 exec-plan。
+- Third-party name and version
+- Official documentation link or source note
+- How this repository uses the dependency or protocol
+- Important limits, pitfalls, and compatibility conclusions
+- The smallest necessary example related to this repository
+
+## Constraints
+
+- Before implementing against a third-party library, framework, SDK, or API, add or verify the corresponding reference note.
+- Reference notes must include explicit versions instead of vague wording like "latest".
+- If an external change affects design or implementation, update the related design or exec-plan documents as well.

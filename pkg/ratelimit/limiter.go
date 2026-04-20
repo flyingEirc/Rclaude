@@ -7,9 +7,9 @@ import (
 	"time"
 )
 
-// ByteLimiter applies a byte-per-second budget using a small token bucket.
+// Limiter applies a generic units-per-second budget using a token bucket.
 // A nil or disabled limiter lets all traffic pass immediately.
-type ByteLimiter struct {
+type Limiter struct {
 	mu     sync.Mutex
 	rate   int64
 	burst  float64
@@ -17,24 +17,58 @@ type ByteLimiter struct {
 	last   time.Time
 }
 
-func NewBytesPerSecond(limit int64) *ByteLimiter {
-	if limit <= 0 {
-		return &ByteLimiter{}
+// ByteLimiter preserves the existing bytes-oriented API on top of Limiter.
+type ByteLimiter struct {
+	limiter *Limiter
+}
+
+// New constructs a generic units-per-second limiter.
+func New(rate int64, burst int64) *Limiter {
+	if rate <= 0 {
+		return &Limiter{}
 	}
+
+	effectiveBurst := burst
+	if effectiveBurst <= 0 {
+		effectiveBurst = rate
+	}
+
 	now := time.Now()
-	return &ByteLimiter{
-		rate:   limit,
-		burst:  float64(limit),
-		tokens: float64(limit),
+	return &Limiter{
+		rate:   rate,
+		burst:  float64(effectiveBurst),
+		tokens: float64(effectiveBurst),
 		last:   now,
 	}
 }
 
-func (l *ByteLimiter) Enabled() bool {
+// NewBytesPerSecond constructs a byte limiter whose burst equals its rate.
+func NewBytesPerSecond(limit int64) *ByteLimiter {
+	return NewBytesPerSecondBurst(limit, limit)
+}
+
+// NewBytesPerSecondBurst constructs a byte limiter with an explicit burst size.
+func NewBytesPerSecondBurst(limit int64, burst int64) *ByteLimiter {
+	return &ByteLimiter{limiter: New(limit, burst)}
+}
+
+// NewPTYAttachLimiter constructs a request limiter for PTY attach attempts.
+func NewPTYAttachLimiter(qps int, burst int) *Limiter {
+	return New(int64(qps), int64(burst))
+}
+
+// NewPTYStdinLimiter constructs a byte limiter for PTY stdin traffic.
+func NewPTYStdinLimiter(bps int64, burst int64) *ByteLimiter {
+	return NewBytesPerSecondBurst(bps, burst)
+}
+
+// Enabled reports whether the limiter is actively enforcing a budget.
+func (l *Limiter) Enabled() bool {
 	return l != nil && l.rate > 0
 }
 
-func (l *ByteLimiter) WaitBytes(ctx context.Context, n int) error {
+// Wait blocks until n units fit within the configured budget or ctx ends.
+func (l *Limiter) Wait(ctx context.Context, n int64) error {
 	if !l.Enabled() || n <= 0 {
 		return nil
 	}
@@ -59,7 +93,7 @@ func (l *ByteLimiter) WaitBytes(ctx context.Context, n int) error {
 			if need < 1 {
 				need = 1
 			}
-			waitFor = durationForBytes(need, l.rate)
+			waitFor = durationForUnits(need, l.rate)
 		}
 		l.mu.Unlock()
 
@@ -73,7 +107,20 @@ func (l *ByteLimiter) WaitBytes(ctx context.Context, n int) error {
 	return nil
 }
 
-func (l *ByteLimiter) refillLocked(now time.Time) {
+// Enabled reports whether the wrapped byte limiter is actively enforcing a budget.
+func (l *ByteLimiter) Enabled() bool {
+	return l != nil && l.limiter != nil && l.limiter.Enabled()
+}
+
+// WaitBytes blocks until n bytes fit within the configured budget or ctx ends.
+func (l *ByteLimiter) WaitBytes(ctx context.Context, n int) error {
+	if l == nil || l.limiter == nil {
+		return nil
+	}
+	return l.limiter.Wait(ctx, int64(n))
+}
+
+func (l *Limiter) refillLocked(now time.Time) {
 	if !l.Enabled() {
 		return
 	}
@@ -113,18 +160,18 @@ func waitContext(ctx context.Context, d time.Duration) error {
 	}
 }
 
-func durationForBytes(bytes float64, rate int64) time.Duration {
-	if bytes <= 0 || rate <= 0 {
+func durationForUnits(units float64, rate int64) time.Duration {
+	if units <= 0 || rate <= 0 {
 		return 0
 	}
-	nanos := math.Ceil(bytes / float64(rate) * float64(time.Second))
+	nanos := math.Ceil(units / float64(rate) * float64(time.Second))
 	if nanos < 1 {
 		nanos = 1
 	}
 	return time.Duration(nanos)
 }
 
-func minFloat64(a, b float64) float64 {
+func minFloat64(a float64, b float64) float64 {
 	if a < b {
 		return a
 	}

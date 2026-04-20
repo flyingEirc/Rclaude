@@ -2,6 +2,7 @@ package session
 
 import (
 	"errors"
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -10,7 +11,14 @@ import (
 var (
 	ErrNilSession  = errors.New("session: nil session")
 	ErrEmptyUserID = errors.New("session: empty user id")
+	ErrPTYBusy     = errors.New("session: pty already active")
 )
+
+// DaemonSession exposes the minimal live-daemon state PTY wiring needs.
+type DaemonSession interface {
+	UserID() string
+	LastHeartbeat() time.Time
+}
 
 type ManagerOptions struct {
 	RequestTimeout         time.Duration
@@ -24,6 +32,8 @@ type ManagerOptions struct {
 type Manager struct {
 	mu                     sync.RWMutex
 	sessions               map[string]*Session
+	activePTY              map[string]string
+	nextPTYID              uint64
 	requestTimeout         time.Duration
 	cacheMaxBytes          int64
 	offlineReadOnlyTTL     time.Duration
@@ -40,6 +50,7 @@ func NewManager(opts ...ManagerOptions) *Manager {
 
 	return &Manager{
 		sessions:               make(map[string]*Session),
+		activePTY:              make(map[string]string),
 		requestTimeout:         cfg.RequestTimeout,
 		cacheMaxBytes:          cfg.CacheMaxBytes,
 		offlineReadOnlyTTL:     cfg.OfflineReadOnlyTTL,
@@ -82,6 +93,59 @@ func (m *Manager) Get(userID string) (*Session, bool) {
 	m.pruneExpiredLocked(time.Now())
 	s, ok := m.sessions[userID]
 	return s, ok
+}
+
+func (m *Manager) LookupDaemon(userID string) (DaemonSession, bool) {
+	if m == nil || userID == "" {
+		return nil, false
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.pruneExpiredLocked(time.Now())
+	current, ok := m.sessions[userID]
+	if !ok || current == nil || sessionClosed(current) {
+		return nil, false
+	}
+	return current, true
+}
+
+func (m *Manager) RegisterPTY(userID string) (string, error) {
+	if m == nil {
+		return "", ErrNilManager
+	}
+	if userID == "" {
+		return "", ErrEmptyUserID
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if _, exists := m.activePTY[userID]; exists {
+		return "", ErrPTYBusy
+	}
+
+	sessionID := m.nextPTYSessionIDLocked(userID)
+	m.activePTY[userID] = sessionID
+	return sessionID, nil
+}
+
+func (m *Manager) UnregisterPTY(userID string, sessionID string) bool {
+	if m == nil || userID == "" || sessionID == "" {
+		return false
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	current, ok := m.activePTY[userID]
+	if !ok || current != sessionID {
+		return false
+	}
+
+	delete(m.activePTY, userID)
+	return true
 }
 
 func (m *Manager) Remove(s *Session) {
@@ -172,5 +236,23 @@ func (m *Manager) pruneExpiredLocked(now time.Time) {
 		if current != nil && current.IsExpired(now) {
 			delete(m.sessions, userID)
 		}
+	}
+}
+
+func (m *Manager) nextPTYSessionIDLocked(userID string) string {
+	m.nextPTYID++
+	return fmt.Sprintf("%s-pty-%d", userID, m.nextPTYID)
+}
+
+func sessionClosed(current *Session) bool {
+	if current == nil {
+		return true
+	}
+
+	select {
+	case <-current.closed:
+		return true
+	default:
+		return false
 	}
 }

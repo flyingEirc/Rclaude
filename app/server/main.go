@@ -83,7 +83,12 @@ func runPreparedServer(
 		warnClose(logger, "close fuse mount", mounted.Close(), os.ErrClosed)
 	}()
 
-	listener, grpcServer, err := newGRPCServer(cfg, verifier, service)
+	ptyService, err := newPTYService(cfg, manager)
+	if err != nil {
+		return fmt.Errorf("server: build pty service: %w", err)
+	}
+
+	listener, grpcServer, err := newGRPCServer(cfg, verifier, service, ptyService)
 	if err != nil {
 		return err
 	}
@@ -143,6 +148,7 @@ func newGRPCServer(
 	cfg *config.ServerConfig,
 	verifier auth.Verifier,
 	service *session.Service,
+	ptyService remotefsv1.RemotePTYServer,
 ) (net.Listener, *grpc.Server, error) {
 	listener, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {
@@ -152,6 +158,9 @@ func newGRPCServer(
 		grpc.StreamInterceptor(auth.StreamServerInterceptor(verifier)),
 	)
 	remotefsv1.RegisterRemoteFSServer(grpcServer, service)
+	if ptyService != nil {
+		remotefsv1.RegisterRemotePTYServer(grpcServer, ptyService)
+	}
 	return listener, grpcServer, nil
 }
 

@@ -1,0 +1,26 @@
+listen: ":9326"
+auth:
+  tokens:
+    "tok-demo": "demo"
+fuse:
+  mountpoint: "/workspace"
+pty:
+  # Use "claude" for the real entry. For scripted transport smoke, temporarily switch to "/bin/sh".
+  binary: "claude"
+  workspace_root: "/workspace"
+  env_passthrough:
+    - "TERM"
+    - "LANG"
+    - "LC_ALL"
+    - "LC_CTYPE"
+    - "PATH"
+  frame_max_bytes: 65536
+  graceful_shutdown_timeout: "5s"
+  ratelimit:
+    attach_qps: 1
+    attach_burst: 3
+    stdin_bps: 1048576
+    stdin_burst: 262144
+log:
+  level: "info"
+  format: "text"

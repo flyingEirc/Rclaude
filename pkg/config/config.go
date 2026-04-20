@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -18,16 +19,28 @@ const (
 	DefaultPrefetchEnabled              = true
 	DefaultPrefetchMaxFileBytes   int64 = 100 * 1024
 	DefaultPrefetchMaxFilesPerDir       = 16
+	DefaultPTYBinary                    = "claude"
+	DefaultPTYWorkspaceRoot             = "/workspace"
+	DefaultPTYFrameMaxBytes       int64 = 64 * 1024
+	DefaultPTYGracefulShutdown          = 5 * time.Second
+	DefaultPTYAttachQPS                 = 1
+	DefaultPTYAttachBurst               = 3
+	DefaultPTYStdinBPS            int64 = 1 << 20
+	DefaultPTYStdinBurst          int64 = 256 * 1024
 )
 
 var (
-	ErrEmptyServerAddress  = errors.New("config: server.address is required")
-	ErrWorkspacePathNotAbs = errors.New("config: workspace.path must be absolute")
-	ErrEmptyListen         = errors.New("config: listen is required")
-	ErrEmptyTokens         = errors.New("config: auth.tokens must contain at least one entry")
-	ErrMountpointNotAbs    = errors.New("config: fuse.mountpoint must be absolute")
-	ErrNegativeReadRate    = errors.New("config: rate_limit.read_bytes_per_sec must be >= 0")
-	ErrNegativeWriteRate   = errors.New("config: rate_limit.write_bytes_per_sec must be >= 0")
+	DefaultPTYEnvPassthrough    = []string{"TERM", "LANG", "LC_ALL", "LC_CTYPE", "PATH"}
+	ErrEmptyServerAddress       = errors.New("config: server.address is required")
+	ErrWorkspacePathNotAbs      = errors.New("config: workspace.path must be absolute")
+	ErrEmptyListen              = errors.New("config: listen is required")
+	ErrEmptyTokens              = errors.New("config: auth.tokens must contain at least one entry")
+	ErrMountpointNotAbs         = errors.New("config: fuse.mountpoint must be absolute")
+	ErrNegativeReadRate         = errors.New("config: rate_limit.read_bytes_per_sec must be >= 0")
+	ErrNegativeWriteRate        = errors.New("config: rate_limit.write_bytes_per_sec must be >= 0")
+	ErrPTYWorkspaceRootNotAbs   = errors.New("config: pty.workspace_root must be absolute")
+	ErrPTYFrameMaxBytesNegative = errors.New("config: pty.frame_max_bytes must be > 0")
+	ErrPTYRateLimitNegative     = errors.New("config: pty.ratelimit values must be >= 0")
 )
 
 type ServerEndpoint struct {
@@ -54,9 +67,14 @@ type RateLimitConfig struct {
 type DaemonConfig struct {
 	Server       ServerEndpoint  `mapstructure:"server"`
 	Workspace    Workspace       `mapstructure:"workspace"`
+	PTY          DaemonPTYConfig `mapstructure:"pty"`
 	Log          LogConfig       `mapstructure:"log"`
 	RateLimit    RateLimitConfig `mapstructure:"rate_limit"`
 	SelfWriteTTL time.Duration   `mapstructure:"self_write_ttl"`
+}
+
+type DaemonPTYConfig struct {
+	FrameMaxBytes int64 `mapstructure:"frame_max_bytes"`
 }
 
 type AuthConfig struct {
@@ -77,12 +95,29 @@ type PrefetchConfig struct {
 	MaxFilesPerDir int   `mapstructure:"max_files_per_dir"`
 }
 
+type PTYRateLimitConfig struct {
+	AttachQPS   int   `mapstructure:"attach_qps"`
+	AttachBurst int   `mapstructure:"attach_burst"`
+	StdinBPS    int64 `mapstructure:"stdin_bps"`
+	StdinBurst  int64 `mapstructure:"stdin_burst"`
+}
+
+type PTYConfig struct {
+	Binary                  string             `mapstructure:"binary"`
+	WorkspaceRoot           string             `mapstructure:"workspace_root"`
+	EnvPassthrough          []string           `mapstructure:"env_passthrough"`
+	FrameMaxBytes           int64              `mapstructure:"frame_max_bytes"`
+	GracefulShutdownTimeout time.Duration      `mapstructure:"graceful_shutdown_timeout"`
+	RateLimit               PTYRateLimitConfig `mapstructure:"ratelimit"`
+}
+
 type ServerConfig struct {
 	Listen             string         `mapstructure:"listen"`
 	Auth               AuthConfig     `mapstructure:"auth"`
 	FUSE               FUSEConfig     `mapstructure:"fuse"`
 	Cache              CacheConfig    `mapstructure:"cache"`
 	Prefetch           PrefetchConfig `mapstructure:"prefetch"`
+	PTY                PTYConfig      `mapstructure:"pty"`
 	Log                LogConfig      `mapstructure:"log"`
 	RequestTimeout     time.Duration  `mapstructure:"request_timeout"`
 	OfflineReadOnlyTTL time.Duration  `mapstructure:"offline_readonly_ttl"`
@@ -126,6 +161,9 @@ func (c *DaemonConfig) Validate() error {
 	if c.SelfWriteTTL <= 0 {
 		c.SelfWriteTTL = DefaultSelfWriteTTL
 	}
+	if c.PTY.FrameMaxBytes <= 0 {
+		return ErrPTYFrameMaxBytesNegative
+	}
 	return nil
 }
 
@@ -141,6 +179,22 @@ func (c *ServerConfig) Validate() error {
 	}
 	if c.RequestTimeout <= 0 {
 		c.RequestTimeout = DefaultRequestTimeout
+	}
+	if err := c.validatePTY(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *ServerConfig) validatePTY() error {
+	if !isAbsolutePTYWorkspaceRoot(c.PTY.WorkspaceRoot) {
+		return ErrPTYWorkspaceRootNotAbs
+	}
+	if c.PTY.FrameMaxBytes <= 0 {
+		return ErrPTYFrameMaxBytesNegative
+	}
+	if hasNegativePTYRateLimit(c.PTY.RateLimit) {
+		return ErrPTYRateLimitNegative
 	}
 	return nil
 }
@@ -165,6 +219,9 @@ func loadYAML(path string, out any) error {
 func defaultDaemonConfig() DaemonConfig {
 	return DaemonConfig{
 		SelfWriteTTL: DefaultSelfWriteTTL,
+		PTY: DaemonPTYConfig{
+			FrameMaxBytes: DefaultPTYFrameMaxBytes,
+		},
 	}
 }
 
@@ -177,5 +234,29 @@ func defaultServerConfig() ServerConfig {
 			MaxFileBytes:   DefaultPrefetchMaxFileBytes,
 			MaxFilesPerDir: DefaultPrefetchMaxFilesPerDir,
 		},
+		PTY: PTYConfig{
+			Binary:                  DefaultPTYBinary,
+			WorkspaceRoot:           DefaultPTYWorkspaceRoot,
+			EnvPassthrough:          append([]string(nil), DefaultPTYEnvPassthrough...),
+			FrameMaxBytes:           DefaultPTYFrameMaxBytes,
+			GracefulShutdownTimeout: DefaultPTYGracefulShutdown,
+			RateLimit: PTYRateLimitConfig{
+				AttachQPS:   DefaultPTYAttachQPS,
+				AttachBurst: DefaultPTYAttachBurst,
+				StdinBPS:    DefaultPTYStdinBPS,
+				StdinBurst:  DefaultPTYStdinBurst,
+			},
+		},
 	}
+}
+
+func isAbsolutePTYWorkspaceRoot(workspaceRoot string) bool {
+	return filepath.IsAbs(workspaceRoot) || path.IsAbs(workspaceRoot)
+}
+
+func hasNegativePTYRateLimit(rateLimit PTYRateLimitConfig) bool {
+	return rateLimit.AttachQPS < 0 ||
+		rateLimit.AttachBurst < 0 ||
+		rateLimit.StdinBPS < 0 ||
+		rateLimit.StdinBurst < 0
 }

@@ -230,7 +230,7 @@ func TestRun_SensitivePathsAreFiltered(t *testing.T) {
 		return resp != nil && resp.GetRequestId() == "read-1"
 	}).GetResponse()
 	assert.False(t, readResp.GetSuccess())
-	assert.Contains(t, readResp.GetError(), "no such file")
+	assertNotExistError(t, readResp.GetError())
 
 	require.NoError(t, server.SendRequest(&remotefsv1.ServerMessage{
 		Msg: &remotefsv1.ServerMessage_Request{

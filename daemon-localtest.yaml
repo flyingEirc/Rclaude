@@ -1,0 +1,16 @@
+# Local developer config reused by rclaude-daemon and rclaude-claude.
+# Not part of the deploy/minimal handoff.
+server:
+  address: "127.0.0.1:9326"
+  token: "tok-demo"
+workspace:
+  path: "E:/Rclaude"
+  exclude:
+    - ".git"
+    - "node_modules"
+    - "vendor"
+log:
+  level: "info"
+  format: "text"
+pty:
+  frame_max_bytes: 65536

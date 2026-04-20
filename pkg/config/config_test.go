@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -61,6 +62,7 @@ log:
 	assert.Equal(t, "json", cfg.Log.Format)
 	assert.Zero(t, cfg.RateLimit.ReadBytesPerSec)
 	assert.Zero(t, cfg.RateLimit.WriteBytesPerSec)
+	assert.Equal(t, config.DefaultPTYFrameMaxBytes, cfg.PTY.FrameMaxBytes)
 }
 
 func TestLoadDaemonExplicitRateLimit(t *testing.T) {
@@ -79,6 +81,22 @@ rate_limit:
 	require.NoError(t, err)
 	assert.EqualValues(t, 1024, cfg.RateLimit.ReadBytesPerSec)
 	assert.EqualValues(t, 2048, cfg.RateLimit.WriteBytesPerSec)
+}
+
+func TestLoadDaemonExplicitPTYFrameMaxBytes(t *testing.T) {
+	t.Parallel()
+	body := `
+server:
+  address: "example.com:9000"
+workspace:
+  path: ` + escapeYAML(absWorkspace()) + `
+pty:
+  frame_max_bytes: 32768
+`
+	path := writeYAML(t, "daemon.yaml", body)
+	cfg, err := config.LoadDaemon(path)
+	require.NoError(t, err)
+	assert.EqualValues(t, 32768, cfg.PTY.FrameMaxBytes)
 }
 
 func TestLoadDaemonNegativeRateLimit(t *testing.T) {
@@ -124,6 +142,22 @@ rate_limit:
 			assert.ErrorIs(t, err, tc.err)
 		})
 	}
+}
+
+func TestLoadDaemonPTYNonPositiveFrameMaxBytes(t *testing.T) {
+	t.Parallel()
+	body := `
+server:
+  address: "example.com:9000"
+workspace:
+  path: ` + escapeYAML(absWorkspace()) + `
+pty:
+  frame_max_bytes: 0
+`
+	path := writeYAML(t, "daemon.yaml", body)
+	_, err := config.LoadDaemon(path)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, config.ErrPTYFrameMaxBytesNegative))
 }
 
 func TestLoadDaemonMissingAddress(t *testing.T) {
@@ -262,6 +296,171 @@ prefetch:
 	assert.False(t, cfg.Prefetch.Enabled)
 	assert.EqualValues(t, 2048, cfg.Prefetch.MaxFileBytes)
 	assert.EqualValues(t, 4, cfg.Prefetch.MaxFilesPerDir)
+}
+
+func TestLoadServerPTYDefaults(t *testing.T) {
+	t.Parallel()
+	body := `
+listen: ":9000"
+auth:
+  tokens: { "t": "u" }
+fuse:
+  mountpoint: ` + escapeYAML(absMountpoint()) + `
+`
+	path := writeYAML(t, "server.yaml", body)
+	cfg, err := config.LoadServer(path)
+	require.NoError(t, err)
+	assert.Equal(t, config.DefaultPTYBinary, cfg.PTY.Binary)
+	assert.Equal(t, config.DefaultPTYWorkspaceRoot, cfg.PTY.WorkspaceRoot)
+	assert.Equal(t, config.DefaultPTYEnvPassthrough, cfg.PTY.EnvPassthrough)
+	assert.Equal(t, config.DefaultPTYFrameMaxBytes, cfg.PTY.FrameMaxBytes)
+	assert.Equal(t, config.DefaultPTYGracefulShutdown, cfg.PTY.GracefulShutdownTimeout)
+	assert.Equal(t, config.DefaultPTYAttachQPS, cfg.PTY.RateLimit.AttachQPS)
+	assert.Equal(t, config.DefaultPTYAttachBurst, cfg.PTY.RateLimit.AttachBurst)
+	assert.Equal(t, config.DefaultPTYStdinBPS, cfg.PTY.RateLimit.StdinBPS)
+	assert.Equal(t, config.DefaultPTYStdinBurst, cfg.PTY.RateLimit.StdinBurst)
+	require.NotEmpty(t, cfg.PTY.EnvPassthrough)
+	assert.NotSame(t, &config.DefaultPTYEnvPassthrough[0], &cfg.PTY.EnvPassthrough[0])
+}
+
+func TestLoadServerPTYExplicitConfig(t *testing.T) {
+	t.Parallel()
+	body := `
+listen: ":9000"
+auth:
+  tokens: { "t": "u" }
+fuse:
+  mountpoint: ` + escapeYAML(absMountpoint()) + `
+pty:
+  binary: "/usr/local/bin/claude"
+  workspace_root: "/srv/workspace"
+  env_passthrough: ["TERM", "PATH"]
+  frame_max_bytes: 32768
+  graceful_shutdown_timeout: "10s"
+  ratelimit:
+    attach_qps: 2
+    attach_burst: 6
+    stdin_bps: 524288
+    stdin_burst: 131072
+`
+	path := writeYAML(t, "server.yaml", body)
+	cfg, err := config.LoadServer(path)
+	require.NoError(t, err)
+	assert.Equal(t, "/usr/local/bin/claude", cfg.PTY.Binary)
+	assert.Equal(t, "/srv/workspace", cfg.PTY.WorkspaceRoot)
+	assert.Equal(t, []string{"TERM", "PATH"}, cfg.PTY.EnvPassthrough)
+	assert.EqualValues(t, 32768, cfg.PTY.FrameMaxBytes)
+	assert.Equal(t, 10*time.Second, cfg.PTY.GracefulShutdownTimeout)
+	assert.Equal(t, 2, cfg.PTY.RateLimit.AttachQPS)
+	assert.Equal(t, 6, cfg.PTY.RateLimit.AttachBurst)
+	assert.EqualValues(t, 524288, cfg.PTY.RateLimit.StdinBPS)
+	assert.EqualValues(t, 131072, cfg.PTY.RateLimit.StdinBurst)
+}
+
+func TestLoadServerPTYRelativeWorkspaceRoot(t *testing.T) {
+	t.Parallel()
+	body := `
+listen: ":9000"
+auth:
+  tokens: { "t": "u" }
+fuse:
+  mountpoint: ` + escapeYAML(absMountpoint()) + `
+pty:
+  workspace_root: "relative/path"
+`
+	path := writeYAML(t, "server.yaml", body)
+	_, err := config.LoadServer(path)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, config.ErrPTYWorkspaceRootNotAbs))
+}
+
+func TestLoadServerPTYNonPositiveFrameMaxBytes(t *testing.T) {
+	t.Parallel()
+	body := `
+listen: ":9000"
+auth:
+  tokens: { "t": "u" }
+fuse:
+  mountpoint: ` + escapeYAML(absMountpoint()) + `
+pty:
+  frame_max_bytes: 0
+`
+	path := writeYAML(t, "server.yaml", body)
+	_, err := config.LoadServer(path)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, config.ErrPTYFrameMaxBytesNegative))
+}
+
+func TestLoadServerPTYNegativeRateLimit(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "attach qps",
+			body: `
+listen: ":9000"
+auth:
+  tokens: { "t": "u" }
+fuse:
+  mountpoint: ` + escapeYAML(absMountpoint()) + `
+pty:
+  ratelimit:
+    attach_qps: -1
+`,
+		},
+		{
+			name: "attach burst",
+			body: `
+listen: ":9000"
+auth:
+  tokens: { "t": "u" }
+fuse:
+  mountpoint: ` + escapeYAML(absMountpoint()) + `
+pty:
+  ratelimit:
+    attach_burst: -1
+`,
+		},
+		{
+			name: "stdin bps",
+			body: `
+listen: ":9000"
+auth:
+  tokens: { "t": "u" }
+fuse:
+  mountpoint: ` + escapeYAML(absMountpoint()) + `
+pty:
+  ratelimit:
+    stdin_bps: -1
+`,
+		},
+		{
+			name: "stdin burst",
+			body: `
+listen: ":9000"
+auth:
+  tokens: { "t": "u" }
+fuse:
+  mountpoint: ` + escapeYAML(absMountpoint()) + `
+pty:
+  ratelimit:
+    stdin_burst: -1
+`,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeYAML(t, "server.yaml", tc.body)
+			_, err := config.LoadServer(path)
+			require.Error(t, err)
+			assert.True(t, errors.Is(err, config.ErrPTYRateLimitNegative))
+		})
+	}
 }
 
 func TestLoadDaemonEnvOverride(t *testing.T) {
