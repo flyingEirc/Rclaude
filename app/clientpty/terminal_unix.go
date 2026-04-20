@@ -33,7 +33,13 @@ func (nativeTerminalController) Prepare(
 
 	size, err := currentWindowSize(stdoutFD)
 	if err != nil {
-		_ = restore(stdinFD, state)
+		if restoreErr := restore(stdinFD, state); restoreErr != nil {
+			return terminalSession{}, fmt.Errorf(
+				"clientpty: query terminal size: %w; restore terminal: %w",
+				err,
+				restoreErr,
+			)
+		}
 		return terminalSession{}, fmt.Errorf("clientpty: query terminal size: %w", err)
 	}
 

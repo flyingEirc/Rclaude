@@ -38,6 +38,7 @@ func Spawn(req SpawnReq) (*Host, error) {
 		return nil, ErrBinaryEmpty
 	}
 
+	//nolint:gosec // req.Binary is resolved by ptyservice before Spawn and Spawn rejects empty values.
 	cmd := exec.Command(req.Binary)
 	cmd.Dir = req.Cwd
 	if len(req.Env) > 0 {
@@ -118,7 +119,9 @@ func (h *Host) Shutdown(graceful bool) error {
 			case <-h.waitDone:
 				return
 			case <-timer.C:
-				_ = h.signal(syscall.SIGKILL, "SIGKILL")
+				if err := h.signal(syscall.SIGKILL, "SIGKILL"); err != nil {
+					return
+				}
 			}
 		}()
 	})
@@ -140,7 +143,9 @@ func (h *Host) signal(sig syscall.Signal, name string) error {
 	err := h.cmd.Process.Signal(sig)
 	if err == nil {
 		if sig == syscall.SIGKILL {
-			_ = h.ptmx.Close()
+			if closeErr := h.ptmx.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
+				return fmt.Errorf("ptyhost: close after %s: %w", name, closeErr)
+			}
 		}
 		return nil
 	}
@@ -154,7 +159,9 @@ func (h *Host) signal(sig syscall.Signal, name string) error {
 func (h *Host) reap() {
 	defer close(h.waitDone)
 	defer func() {
-		_ = h.ptmx.Close()
+		if err := h.ptmx.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
+			return
+		}
 	}()
 
 	err := h.cmd.Wait()

@@ -61,6 +61,8 @@ type PTYHarness struct {
 
 // PTYDaemon keeps one real RemoteFS.Connect stream open for PTY tests.
 type PTYDaemon struct {
+	t testing.TB
+
 	conn   *grpc.ClientConn
 	stream grpc.BidiStreamingClient[remotefsv1.DaemonMessage, remotefsv1.ServerMessage]
 	cancel context.CancelFunc
@@ -174,7 +176,9 @@ func (h *PTYHarness) NewClientConn() *grpc.ClientConn {
 	conn, err := h.Server.NewClientConn()
 	require.NoError(h.t, err)
 	h.t.Cleanup(func() {
-		_ = conn.Close()
+		if err := conn.Close(); err != nil {
+			h.t.Logf("close PTY client connection: %v", err)
+		}
 	})
 	return conn
 }
@@ -210,6 +214,7 @@ func (h *PTYHarness) ConnectDaemon(ctx context.Context, files ...*remotefsv1.Fil
 	}()
 
 	daemon := &PTYDaemon{
+		t:         h.t,
 		conn:      conn,
 		stream:    stream,
 		cancel:    cancel,
@@ -238,19 +243,47 @@ func (d *PTYDaemon) Cleanup() {
 	}
 
 	d.once.Do(func() {
-		if d.stream != nil {
-			_ = d.stream.CloseSend()
-		}
-		if d.cancel != nil {
-			d.cancel()
-		}
-		if d.conn != nil {
-			_ = d.conn.Close()
-		}
-		if d.recvErrCh != nil {
-			<-d.recvErrCh
-		}
+		d.closeSend()
+		d.cancelContext()
+		d.closeConn()
+		d.waitRecv()
 	})
+}
+
+func (d *PTYDaemon) closeSend() {
+	if d.stream == nil {
+		return
+	}
+	if err := d.stream.CloseSend(); err != nil {
+		d.logf("close PTY daemon send stream: %v", err)
+	}
+}
+
+func (d *PTYDaemon) cancelContext() {
+	if d.cancel != nil {
+		d.cancel()
+	}
+}
+
+func (d *PTYDaemon) closeConn() {
+	if d.conn == nil {
+		return
+	}
+	if err := d.conn.Close(); err != nil {
+		d.logf("close PTY daemon connection: %v", err)
+	}
+}
+
+func (d *PTYDaemon) waitRecv() {
+	if d.recvErrCh != nil {
+		<-d.recvErrCh
+	}
+}
+
+func (d *PTYDaemon) logf(format string, args ...any) {
+	if d.t != nil {
+		d.t.Logf(format, args...)
+	}
 }
 
 func NewPTYHost() *PTYHost {
@@ -314,7 +347,11 @@ func (h *PTYHost) Finish(info ptyhost.ExitInfo, err error) {
 		h.waitInfo = info
 		h.waitErr = err
 		h.stateMu.Unlock()
-		_ = h.stdoutW.Close()
+		if err := h.stdoutW.Close(); err != nil && !errors.Is(err, io.ErrClosedPipe) {
+			h.stateMu.Lock()
+			h.waitErr = errors.Join(h.waitErr, err)
+			h.stateMu.Unlock()
+		}
 		close(h.waitCh)
 	})
 }

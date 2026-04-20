@@ -488,6 +488,9 @@ func testDaemonConfig(root, address, token string) *config.DaemonConfig {
 		Workspace: config.Workspace{
 			Path: root,
 		},
+		PTY: config.DaemonPTYConfig{
+			FrameMaxBytes: config.DefaultPTYFrameMaxBytes,
+		},
 	}
 }
 

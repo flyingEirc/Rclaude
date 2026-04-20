@@ -33,7 +33,9 @@ func TestSpawn_EchoAndExit(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(&buf, h.Stdout())
+		if _, copyErr := io.Copy(&buf, h.Stdout()); copyErr != nil {
+			t.Logf("copy PTY stdout: %v", copyErr)
+		}
 	}()
 
 	_, err = h.Stdin().Write([]byte("echo hello-pty\n"))
@@ -93,7 +95,9 @@ func TestResize_PropagatesToChild(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(&buf, h.Stdout())
+		if _, copyErr := io.Copy(&buf, h.Stdout()); copyErr != nil {
+			t.Logf("copy PTY stdout: %v", copyErr)
+		}
 	}()
 
 	_, err = h.Stdin().Write([]byte("stty size; exit 0\n"))
@@ -125,7 +129,9 @@ func TestShutdown_GracefulThenKill(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	go func() {
-		_, _ = io.Copy(io.Discard, h.Stdout())
+		if _, copyErr := io.Copy(io.Discard, h.Stdout()); copyErr != nil {
+			t.Logf("discard PTY stdout: %v", copyErr)
+		}
 	}()
 
 	require.NoError(t, h.Shutdown(true))

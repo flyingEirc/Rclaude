@@ -350,6 +350,8 @@ func (h *fakeHost) Wait(ctx context.Context) (ptyhost.ExitInfo, error) {
 	case <-ctx.Done():
 		return ptyhost.ExitInfo{}, ctx.Err()
 	case <-h.waitCh:
+		h.mu.Lock()
+		defer h.mu.Unlock()
 		return h.waitInfo, h.waitErr
 	}
 }
