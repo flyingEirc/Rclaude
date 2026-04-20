@@ -1,4 +1,5 @@
 # Local developer config reused by rclaude-daemon and rclaude-claude.
+# Pair with repository-root server-localtest.yaml when running a local/dev server.
 # Not part of the deploy/minimal handoff.
 server:
   address: "127.0.0.1:9326"

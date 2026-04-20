@@ -1,0 +1,24 @@
+# Local developer config for running rclaude-server on a Linux dev box.
+# Pair with repository-root daemon-localtest.yaml.
+# Not part of the deploy/minimal handoff.
+listen: ":9326"
+auth:
+  tokens:
+    "tok-demo": "demo"
+fuse:
+  mountpoint: "/workspace"
+log:
+  level: "info"
+  format: "text"
+pty:
+  # Use "claude" for real manual PTY acceptance. For scripted transport smoke,
+  # temporarily switch this to "/bin/sh".
+  binary: "claude"
+  workspace_root: "/workspace"
+  env_passthrough:
+    - "TERM"
+    - "LANG"
+    - "LC_ALL"
+    - "LC_CTYPE"
+    - "PATH"
+  frame_max_bytes: 65536

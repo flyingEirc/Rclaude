@@ -220,6 +220,18 @@ log:
 ./bin/rclaude-daemon --config ./daemon.yaml
 ```
 
+仓库根目录还内置了一组开发者本地联调配置，可直接用于反复手测：
+
+- `server-localtest.yaml`：给 Linux 开发机上的 `rclaude-server` 使用
+- `daemon-localtest.yaml`：给本地 `rclaude-daemon` / `rclaude-claude` 使用
+
+例如：
+
+```bash
+./bin/rclaude-server --config ./server-localtest.yaml
+./bin/rclaude-daemon --config ./daemon-localtest.yaml
+```
+
 启动成功后，Server 侧会出现：
 
 ```text
