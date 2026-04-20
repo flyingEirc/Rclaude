@@ -30,12 +30,12 @@ func TestSpawn_EchoAndExit(t *testing.T) {
 
 	var buf bytes.Buffer
 	var wg sync.WaitGroup
+	errCh := make(chan error, 1)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if _, copyErr := io.Copy(&buf, h.Stdout()); copyErr != nil {
-			t.Logf("copy PTY stdout: %v", copyErr)
-		}
+		_, copyErr := io.Copy(&buf, h.Stdout())
+		errCh <- copyErr
 	}()
 
 	_, err = h.Stdin().Write([]byte("echo hello-pty\n"))
@@ -50,6 +50,7 @@ func TestSpawn_EchoAndExit(t *testing.T) {
 	assert.Equal(t, int32(0), info.Code)
 
 	wg.Wait()
+	require.NoError(t, <-errCh)
 	assert.Contains(t, buf.String(), "hello-pty")
 }
 

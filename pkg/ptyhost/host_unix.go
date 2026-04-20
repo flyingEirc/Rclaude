@@ -38,9 +38,10 @@ func Spawn(req SpawnReq) (*Host, error) {
 		return nil, ErrBinaryEmpty
 	}
 
-	//nolint:gosec // req.Binary is resolved by ptyservice before Spawn and Spawn rejects empty values.
-	cmd := exec.Command(req.Binary)
-	cmd.Dir = req.Cwd
+	cmd, err := commandForSpawn(req)
+	if err != nil {
+		return nil, err
+	}
 	if len(req.Env) > 0 {
 		cmd.Env = append([]string(nil), req.Env...)
 	}
@@ -76,6 +77,40 @@ func Spawn(req SpawnReq) (*Host, error) {
 	return h, nil
 }
 
+func commandForSpawn(req SpawnReq) (*exec.Cmd, error) {
+	binary, err := exec.LookPath(strings.TrimSpace(req.Binary))
+	if err != nil {
+		return nil, fmt.Errorf("ptyhost: binary %q: %w", req.Binary, err)
+	}
+
+	if strings.TrimSpace(req.Cwd) == "" {
+		return exec.Command(binary), nil //nolint:gosec // binary has been resolved with exec.LookPath above.
+	}
+	if err := validateCwd(req.Cwd); err != nil {
+		return nil, err
+	}
+
+	// Avoid exec.Cmd.Dir for self-hosted FUSE workspaces. Go applies Cmd.Dir in
+	// the child before exec, while the parent waits for exec to finish; if the
+	// cwd is served by this process' own FUSE server, that pre-exec chdir can
+	// deadlock the PTY attach. Exec /bin/sh first, then cd inside the child.
+	//nolint:gosec // shell source is fixed; cwd and resolved binary are passed as positional args.
+	cmd := exec.Command("/bin/sh", "-c", `cd -- "$1" && exec "$2"`, "rclaude-pty", req.Cwd, binary)
+	cmd.Dir = string(os.PathSeparator)
+	return cmd, nil
+}
+
+func validateCwd(cwd string) error {
+	info, err := os.Stat(cwd)
+	if err != nil {
+		return fmt.Errorf("ptyhost: stat cwd %q: %w", cwd, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("ptyhost: cwd %q is not a directory", cwd)
+	}
+	return nil
+}
+
 // Stdin returns the PTY master as the child's input writer.
 func (h *Host) Stdin() io.Writer {
 	return h.ptmx
@@ -83,7 +118,7 @@ func (h *Host) Stdin() io.Writer {
 
 // Stdout returns the PTY master as the child's merged stdout/stderr reader.
 func (h *Host) Stdout() io.Reader {
-	return h.ptmx
+	return eofOnEIOReader{r: h.ptmx}
 }
 
 // Resize forwards window-size changes to the PTY.
@@ -94,6 +129,18 @@ func (h *Host) Resize(ws WindowSize) error {
 		X:    uint16(ws.XPixel),
 		Y:    uint16(ws.YPixel),
 	})
+}
+
+type eofOnEIOReader struct {
+	r io.Reader
+}
+
+func (r eofOnEIOReader) Read(p []byte) (int, error) {
+	n, err := r.r.Read(p)
+	if errors.Is(err, syscall.EIO) || errors.Is(err, os.ErrClosed) {
+		err = io.EOF
+	}
+	return n, err
 }
 
 // Shutdown asks the child to exit.
