@@ -48,13 +48,17 @@ func resolveActionTargetRel(root, relPath string, opts pathResolutionOptions) (s
 	if err != nil {
 		return "", false, err
 	}
+	canonicalRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", false, err
+	}
 
 	resolvedAbs, err := resolveActionTargetAbs(abs, opts)
 	if err != nil {
 		return "", false, err
 	}
 
-	within, err := safepath.IsWithin(root, resolvedAbs)
+	within, err := safepath.IsWithin(canonicalRoot, resolvedAbs)
 	if err != nil {
 		return "", false, err
 	}
@@ -62,7 +66,7 @@ func resolveActionTargetRel(root, relPath string, opts pathResolutionOptions) (s
 		return "", false, nil
 	}
 
-	targetRel, err := filepath.Rel(root, resolvedAbs)
+	targetRel, err := filepath.Rel(canonicalRoot, resolvedAbs)
 	if err != nil {
 		return "", false, err
 	}

@@ -33,7 +33,10 @@ func Mount(ctx context.Context, opts Options) (Mounted, error) {
 	}
 	opts = defaultedOptions(opts)
 
-	root := &rootNode{manager: opts.Manager}
+	root := &rootNode{
+		manager: opts.Manager,
+		inodes:  newInodeAllocator(),
+	}
 
 	server, err := fs.Mount(opts.Mountpoint, root, &fs.Options{
 		MountOptions: fuse.MountOptions{
@@ -45,6 +48,7 @@ func Mount(ctx context.Context, opts Options) (Mounted, error) {
 		EntryTimeout:    durationPtr(opts.EntryTimeout),
 		AttrTimeout:     durationPtr(opts.AttrTimeout),
 		NegativeTimeout: durationPtr(opts.NegativeTimeout),
+		RootStableAttr:  &fs.StableAttr{Ino: 1},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("fusefs: mount %q: %w", opts.Mountpoint, err)
@@ -78,6 +82,7 @@ func (m *mountedFS) Close() error {
 type rootNode struct {
 	fs.Inode
 	manager *session.Manager
+	inodes  *inodeAllocator
 }
 
 type workspaceNode struct {
@@ -85,6 +90,7 @@ type workspaceNode struct {
 	manager *session.Manager
 	userID  string
 	relPath string
+	inodes  *inodeAllocator
 }
 
 var (
@@ -117,15 +123,17 @@ func (n *rootNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) 
 		return nil, errnoFromError(err)
 	}
 	fillEntryOut(out, info)
-	child := &workspaceNode{manager: n.manager, userID: name, relPath: ""}
-	return n.NewInode(ctx, child, fs.StableAttr{Mode: stableMode(info)}), 0
+	child := &workspaceNode{manager: n.manager, userID: name, relPath: "", inodes: n.inodes}
+	return n.NewInode(ctx, child, toFuseStableAttr(n.inodes.stableAttr(name, "", info))), 0
 }
 
 func (n *rootNode) Readdir(_ context.Context) (fs.DirStream, syscall.Errno) {
 	userIDs := n.manager.UserIDs()
 	entries := make([]fuse.DirEntry, 0, len(userIDs))
 	for _, userID := range userIDs {
-		entries = append(entries, fuse.DirEntry{Name: userID, Mode: syscall.S_IFDIR})
+		info := &remotefsv1.FileInfo{IsDir: true}
+		attr := n.inodes.stableAttr(userID, "", info)
+		entries = append(entries, fuse.DirEntry{Name: userID, Mode: attr.Mode, Ino: attr.Ino})
 	}
 	return fs.NewListDirStream(entries), 0
 }
@@ -146,8 +154,8 @@ func (n *workspaceNode) Lookup(ctx context.Context, name string, out *fuse.Entry
 		return nil, errnoFromError(err)
 	}
 	fillEntryOut(out, info)
-	child := &workspaceNode{manager: n.manager, userID: n.userID, relPath: nextPath}
-	return n.NewInode(ctx, child, fs.StableAttr{Mode: stableMode(info)}), 0
+	child := &workspaceNode{manager: n.manager, userID: n.userID, relPath: nextPath, inodes: n.inodes}
+	return n.NewInode(ctx, child, toFuseStableAttr(n.inodes.stableAttr(n.userID, nextPath, info))), 0
 }
 
 func (n *workspaceNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
@@ -162,9 +170,11 @@ func (n *workspaceNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errn
 
 	entries := make([]fuse.DirEntry, 0, len(infos))
 	for _, info := range infos {
+		attr := n.inodes.stableAttr(n.userID, info.GetPath(), info)
 		entries = append(entries, fuse.DirEntry{
 			Name: baseName(info.GetPath()),
-			Mode: stableMode(info),
+			Mode: attr.Mode,
+			Ino:  attr.Ino,
 		})
 	}
 	return fs.NewListDirStream(entries), 0
@@ -212,8 +222,8 @@ func (n *workspaceNode) Create(
 		return nil, nil, 0, errnoFromError(err)
 	}
 	fillEntryOut(out, info)
-	child := &workspaceNode{manager: n.manager, userID: n.userID, relPath: childRel}
-	inode := n.NewInode(ctx, child, fs.StableAttr{Mode: stableMode(info)})
+	child := &workspaceNode{manager: n.manager, userID: n.userID, relPath: childRel, inodes: n.inodes}
+	inode := n.NewInode(ctx, child, toFuseStableAttr(n.inodes.stableAttr(n.userID, childRel, info)))
 	return inode, nil, 0, 0
 }
 
@@ -227,8 +237,8 @@ func (n *workspaceNode) Mkdir(ctx context.Context, name string, _ uint32, out *f
 		return nil, errnoFromError(err)
 	}
 	fillEntryOut(out, info)
-	child := &workspaceNode{manager: n.manager, userID: n.userID, relPath: childRel}
-	return n.NewInode(ctx, child, fs.StableAttr{Mode: stableMode(info)}), 0
+	child := &workspaceNode{manager: n.manager, userID: n.userID, relPath: childRel, inodes: n.inodes}
+	return n.NewInode(ctx, child, toFuseStableAttr(n.inodes.stableAttr(n.userID, childRel, info))), 0
 }
 
 func (n *workspaceNode) Unlink(ctx context.Context, name string) syscall.Errno {
@@ -299,6 +309,14 @@ func fillAttr(out *fuse.Attr, info *remotefsv1.FileInfo) {
 	out.Atime = uint64(now.Unix())
 }
 
+func toFuseStableAttr(attr stableAttr) fs.StableAttr {
+	return fs.StableAttr{
+		Mode: attr.Mode,
+		Ino:  attr.Ino,
+		Gen:  attr.Gen,
+	}
+}
+
 func durationPtr(v time.Duration) *time.Duration {
 	if v <= 0 {
 		return nil
@@ -322,13 +340,6 @@ func childPath(parent, name string) string {
 
 func baseName(relPath string) string {
 	return pathpkg.Base(relPath)
-}
-
-func stableMode(info *remotefsv1.FileInfo) uint32 {
-	if info != nil && info.GetIsDir() {
-		return syscall.S_IFDIR
-	}
-	return syscall.S_IFREG
 }
 
 func visibleMode(info *remotefsv1.FileInfo) uint32 {

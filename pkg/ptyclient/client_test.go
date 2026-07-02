@@ -146,6 +146,35 @@ func TestClientHappyPath(t *testing.T) {
 	require.Contains(t, sentStdinPayloads(frames), []byte("hello\n"))
 }
 
+func TestClientIgnoresClosedStdinAfterRemoteExit(t *testing.T) {
+	stream := newFakeStream()
+	stdin, stdinWriter := io.Pipe()
+	defer func() {
+		require.NoError(t, stdinWriter.Close())
+	}()
+
+	client := ptyclient.New(ptyclient.Config{
+		Stream: stream,
+		Stdin:  stdin,
+		Stdout: io.Discard,
+	})
+
+	go func() {
+		stream.pushAttached("sess-closed-stdin", "/workspace/alice")
+		time.Sleep(20 * time.Millisecond)
+		stream.pushExited(0, 0)
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	result := client.Run(ctx)
+	require.NoError(t, result.Err)
+	require.Nil(t, result.ServerError)
+	require.Equal(t, int32(0), result.Code)
+	require.Equal(t, uint32(0), result.Signal)
+}
+
 func TestClientServerErrorBeforeAttached(t *testing.T) {
 	stream := newFakeStream()
 	client := ptyclient.New(ptyclient.Config{

@@ -275,6 +275,48 @@ func TestRunCommandMapsRateLimitedServerErrorToExitStatus(t *testing.T) {
 	assert.Equal(t, "stdin limited: burst exceeded", exitErr.message)
 }
 
+func TestRunCommandMapsSpawnFailedServerErrorToActionableExitStatus(t *testing.T) {
+	stream := newFakeStream()
+
+	deps := commandDeps{
+		stdin:  io.NopCloser(bytes.NewReader(nil)),
+		stdout: io.Discard,
+		loadConfig: func(string) (loadedConfig, error) {
+			return loadedConfig{Address: "example.com:9326", Token: "tok-auth", FrameMax: 64}, nil
+		},
+		terminal: fakeTerminal{
+			tty: true,
+			session: terminalSession{
+				InitialSize: ptyclient.WindowSize{Cols: 80, Rows: 24},
+				Resizes:     closedResizeCh(),
+				Restore:     func() error { return nil },
+			},
+		},
+		dialPTY: func(context.Context, dialConfig) (ptyclient.Stream, io.Closer, error) {
+			return stream, io.NopCloser(bytes.NewReader(nil)), nil
+		},
+		stdinFD:  0,
+		stdoutFD: 1,
+		termName: "xterm-256color",
+	}
+
+	go stream.pushError(remotefsv1.Error_KIND_SPAWN_FAILED, `resolve pty binary "claude": ptyhost: binary not found in PATH`)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	err := runCommand(ctx, deps, "daemon.yaml")
+	require.Error(t, err)
+
+	var exitErr *exitStatus
+	require.ErrorAs(t, err, &exitErr)
+	assert.Equal(t, 4, exitErr.code)
+	assert.Contains(t, exitErr.message, "failed to start remote claude process on Server")
+	assert.Contains(t, exitErr.message, `resolve pty binary "claude"`)
+	assert.Contains(t, exitErr.message, "pty.binary")
+	assert.Contains(t, exitErr.message, "Server-side Claude login")
+}
+
 func TestLoadClientConfigUsesServerToken(t *testing.T) {
 	t.Run("use server token", func(t *testing.T) {
 		path := writeDaemonConfig(t, `

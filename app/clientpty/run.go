@@ -330,6 +330,10 @@ func serverErrorExitCode(serverErr *remotefsv1.Error) int {
 }
 
 func serverErrorMessage(serverErr *remotefsv1.Error) string {
+	if serverErr.GetKind() == remotefsv1.Error_KIND_SPAWN_FAILED {
+		return spawnFailedMessage(serverErr.GetMessage())
+	}
+
 	if msg := strings.TrimSpace(serverErr.GetMessage()); msg != "" {
 		return msg
 	}
@@ -339,8 +343,6 @@ func serverErrorMessage(serverErr *remotefsv1.Error) string {
 		return "daemon offline, run daemon first"
 	case remotefsv1.Error_KIND_SESSION_BUSY:
 		return "another claude session is active"
-	case remotefsv1.Error_KIND_SPAWN_FAILED:
-		return "failed to start remote claude process"
 	case remotefsv1.Error_KIND_RATE_LIMITED:
 		return "too many attach requests"
 	case remotefsv1.Error_KIND_PROTOCOL:
@@ -350,6 +352,15 @@ func serverErrorMessage(serverErr *remotefsv1.Error) string {
 	default:
 		return "remote pty attach failed"
 	}
+}
+
+func spawnFailedMessage(detail string) string {
+	msg := "failed to start remote claude process on Server"
+	if detail = strings.TrimSpace(detail); detail != "" {
+		msg += ": " + detail
+	}
+	msg += "; check Server pty.binary, pty.args, PATH, /workspace/<user_id>, and Server-side Claude login"
+	return msg
 }
 
 func grpcStatusExitCode(code codes.Code) int {

@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -41,7 +43,7 @@ func TestNewPTYServiceBuildsFromServerConfig(t *testing.T) {
 				StdinBurst:  512,
 			},
 		},
-	}, manager)
+	}, manager, discardLogger())
 	require.NoError(t, err)
 	require.NotNil(t, svc)
 }
@@ -104,4 +106,8 @@ func testWorkspaceRoot() string {
 		return filepath.Join(os.TempDir(), "rclaude-app-server-pty")
 	}
 	return filepath.Join(string(filepath.Separator), "tmp", "rclaude-app-server-pty")
+}
+
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }

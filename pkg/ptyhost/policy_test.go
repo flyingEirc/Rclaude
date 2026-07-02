@@ -90,6 +90,32 @@ func TestBuildEnv_WhitelistOnly(t *testing.T) {
 	}, got)
 }
 
+func TestBuildEnv_PatternWhitelist(t *testing.T) {
+	t.Parallel()
+
+	source := map[string]string{
+		"ANTHROPIC_API_KEY":      "secret",
+		"ANTHROPIC_BASE_URL":     "https://gateway.example",
+		"CLAUDE_CODE_SHELL":      "/bin/zsh",
+		"CLAUDE_CONFIG_DIR":      "/srv/claude-config",
+		"AWS_REGION":             "us-east-1",
+		"AWS_SECRET_ACCESS_KEY":  "aws-secret",
+		"HOME":                   "/home/server",
+		"OTHER_TOKEN":            "do-not-pass",
+		"RCLAUDE_INTERNAL_TOKEN": "do-not-pass",
+	}
+	whitelist := []string{"ANTHROPIC_*", "CLAUDE_CODE_*", "CLAUDE_CONFIG_DIR", "AWS_REGION"}
+
+	got := ptyhost.BuildEnv(source, whitelist, "")
+	assert.Equal(t, []string{
+		"ANTHROPIC_API_KEY=secret",
+		"ANTHROPIC_BASE_URL=https://gateway.example",
+		"AWS_REGION=us-east-1",
+		"CLAUDE_CODE_SHELL=/bin/zsh",
+		"CLAUDE_CONFIG_DIR=/srv/claude-config",
+	}, got)
+}
+
 func TestBuildEnv_ClientTermOverride(t *testing.T) {
 	t.Parallel()
 

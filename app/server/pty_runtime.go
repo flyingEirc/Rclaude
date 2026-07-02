@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sync"
 
 	"flyingEirc/Rclaude/pkg/config"
@@ -12,7 +13,7 @@ import (
 	"flyingEirc/Rclaude/pkg/session"
 )
 
-func newPTYService(cfg *config.ServerConfig, manager *session.Manager) (*ptyservice.Service, error) {
+func newPTYService(cfg *config.ServerConfig, manager *session.Manager, logger *slog.Logger) (*ptyservice.Service, error) {
 	if cfg == nil {
 		return nil, nil
 	}
@@ -26,10 +27,12 @@ func newPTYService(cfg *config.ServerConfig, manager *session.Manager) (*ptyserv
 		AttachLimit:  newAttachLimiterStore(cfg.PTY.RateLimit.AttachQPS, cfg.PTY.RateLimit.AttachBurst),
 		InputLimit:   newInputLimiterStore(cfg.PTY.RateLimit.StdinBPS, cfg.PTY.RateLimit.StdinBurst),
 		Binary:       cfg.PTY.Binary,
+		Args:         append([]string(nil), cfg.PTY.Args...),
 		Workspace:    cfg.PTY.WorkspaceRoot,
 		EnvWhitelist: append([]string(nil), cfg.PTY.EnvPassthrough...),
 		FrameMax:     cfg.PTY.FrameMaxBytes,
 		GracefulStop: cfg.PTY.GracefulShutdownTimeout,
+		Logger:       logger,
 	})
 }
 

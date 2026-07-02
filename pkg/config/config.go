@@ -30,7 +30,7 @@ const (
 )
 
 var (
-	DefaultPTYEnvPassthrough    = []string{"TERM", "LANG", "LC_ALL", "LC_CTYPE", "PATH"}
+	DefaultPTYEnvPassthrough    = []string{"TERM", "LANG", "LC_ALL", "LC_CTYPE", "PATH", "HOME", "SHELL", "CLAUDE_CONFIG_DIR"}
 	ErrEmptyServerAddress       = errors.New("config: server.address is required")
 	ErrWorkspacePathNotAbs      = errors.New("config: workspace.path must be absolute")
 	ErrEmptyListen              = errors.New("config: listen is required")
@@ -104,6 +104,7 @@ type PTYRateLimitConfig struct {
 
 type PTYConfig struct {
 	Binary                  string             `mapstructure:"binary"`
+	Args                    []string           `mapstructure:"args"`
 	WorkspaceRoot           string             `mapstructure:"workspace_root"`
 	EnvPassthrough          []string           `mapstructure:"env_passthrough"`
 	FrameMaxBytes           int64              `mapstructure:"frame_max_bytes"`
@@ -200,11 +201,11 @@ func (c *ServerConfig) validatePTY() error {
 }
 
 func loadYAML(path string, out any) error {
-	v := viper.New()
+	v := viper.NewWithOptions(viper.KeyDelimiter("::"))
 	v.SetConfigFile(path)
 	v.SetConfigType("yaml")
 	v.SetEnvPrefix(envPrefix)
-	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	v.SetEnvKeyReplacer(strings.NewReplacer("::", "_", ".", "_"))
 	v.AutomaticEnv()
 
 	if err := v.ReadInConfig(); err != nil {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"reflect"
 	"strings"
@@ -63,10 +64,12 @@ type Config struct {
 	AttachLimit  AttachLimiter
 	InputLimit   InputLimiter
 	Binary       string
+	Args         []string
 	Workspace    string
 	EnvWhitelist []string
 	FrameMax     int64
 	GracefulStop time.Duration
+	Logger       *slog.Logger
 }
 
 type Service struct {
@@ -97,6 +100,10 @@ func New(cfg Config) (*Service, error) {
 	if cfg.GracefulStop <= 0 {
 		cfg.GracefulStop = config.DefaultPTYGracefulShutdown
 	}
+	if cfg.Logger == nil {
+		cfg.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+	cfg.Args = append([]string(nil), cfg.Args...)
 	return &Service{cfg: cfg}, nil
 }
 
@@ -109,6 +116,7 @@ func (s *Service) attach(stream grpcBidiStream) error {
 	if err != nil {
 		return normalizeApplicationStop(err)
 	}
+	s.logAttachRequested(userID, attach)
 
 	sessionID, err := s.reserveSession(stream, userID)
 	if err != nil {
@@ -129,8 +137,13 @@ func (s *Service) attach(stream grpcBidiStream) error {
 		cleanupHost(host)
 		return err
 	}
+	s.cfg.Logger.Info("pty attached",
+		"user_id", userID,
+		"session_id", sessionID,
+		"cwd", cwd,
+	)
 
-	return s.runAttached(stream, userID, host)
+	return s.runAttached(stream, userID, sessionID, host)
 }
 
 func receiveAttachRequest(stream grpcBidiStream) (string, *remotefsv1.AttachReq, error) {
@@ -152,14 +165,17 @@ func receiveAttachRequest(stream grpcBidiStream) (string, *remotefsv1.AttachReq,
 
 func (s *Service) reserveSession(stream grpcBidiStream, userID string) (string, error) {
 	if !s.cfg.Registry.LookupDaemon(userID) {
+		s.logAttachRejected(userID, "daemon_not_connected", nil)
 		return "", applicationError(stream, remotefsv1.Error_KIND_DAEMON_NOT_CONNECTED, "daemon not connected")
 	}
 
 	sessionID, ok, err := s.cfg.Registry.RegisterPTY(userID)
 	if err != nil {
+		s.logAttachRejected(userID, "registry_error", err)
 		return "", applicationError(stream, remotefsv1.Error_KIND_INTERNAL, err.Error())
 	}
 	if !ok {
+		s.logAttachRejected(userID, "session_busy", nil)
 		return "", applicationError(stream, remotefsv1.Error_KIND_SESSION_BUSY, "pty session already attached")
 	}
 	return sessionID, nil
@@ -171,6 +187,7 @@ func (s *Service) enforceAttachLimit(stream grpcBidiStream, userID string) error
 	}
 	waitErr := s.cfg.AttachLimit.Wait(stream.Context(), userID)
 	if waitErr != nil {
+		s.logAttachRejected(userID, "attach_rate_limited", waitErr)
 		return applicationError(stream, remotefsv1.Error_KIND_RATE_LIMITED, waitErr.Error())
 	}
 	return nil
@@ -183,20 +200,47 @@ func (s *Service) startHost(
 ) (Host, string, error) {
 	binary, cwd, env, err := s.prepareSpawn(userID, attach)
 	if err != nil {
+		s.cfg.Logger.Warn("pty spawn failed",
+			"user_id", userID,
+			"binary", s.cfg.Binary,
+			"err", err,
+		)
 		return nil, "", applicationError(stream, remotefsv1.Error_KIND_SPAWN_FAILED, err.Error())
 	}
 
+	args := append([]string(nil), s.cfg.Args...)
+	s.cfg.Logger.Info("pty spawn starting",
+		"user_id", userID,
+		"binary", binary,
+		"args_count", len(args),
+		"cwd", cwd,
+	)
 	host, err := s.cfg.Spawner.Spawn(ptyhost.SpawnReq{
 		Binary:          binary,
+		Args:            args,
 		Cwd:             cwd,
 		Env:             env,
 		InitSize:        fromProtoSize(attach.GetInitialSize()),
 		GracefulTimeout: s.cfg.GracefulStop,
 	})
 	if err != nil {
+		s.cfg.Logger.Warn("pty spawn failed",
+			"user_id", userID,
+			"binary", binary,
+			"args_count", len(args),
+			"cwd", cwd,
+			"err", err,
+		)
 		return nil, "", applicationError(stream, remotefsv1.Error_KIND_SPAWN_FAILED, err.Error())
 	}
 	if isNilHost(host) {
+		s.cfg.Logger.Warn("pty spawn failed",
+			"user_id", userID,
+			"binary", binary,
+			"args_count", len(args),
+			"cwd", cwd,
+			"err", ErrNilHost,
+		)
 		return nil, "", applicationError(stream, remotefsv1.Error_KIND_SPAWN_FAILED, ErrNilHost.Error())
 	}
 	return host, cwd, nil
@@ -205,7 +249,7 @@ func (s *Service) startHost(
 func (s *Service) prepareSpawn(userID string, attach *remotefsv1.AttachReq) (string, string, []string, error) {
 	binary, err := ptyhost.ResolveBinary(s.cfg.Binary)
 	if err != nil {
-		return "", "", nil, err
+		return "", "", nil, fmt.Errorf("resolve pty binary %q: %w", s.cfg.Binary, err)
 	}
 	cwd, err := ptyhost.ResolveCwd(s.cfg.Workspace, userID)
 	if err != nil {
@@ -215,7 +259,7 @@ func (s *Service) prepareSpawn(userID string, attach *remotefsv1.AttachReq) (str
 	return binary, cwd, env, nil
 }
 
-func (s *Service) runAttached(stream grpcBidiStream, userID string, host Host) error {
+func (s *Service) runAttached(stream grpcBidiStream, userID string, sessionID string, host Host) error {
 	stdoutCh := make(chan stdoutEvent, 8)
 	clientCh := make(chan clientEvent, 8)
 	exitCh := make(chan exitEvent, 1)
@@ -226,7 +270,7 @@ func (s *Service) runAttached(stream grpcBidiStream, userID string, host Host) e
 
 	runtime := newAttachRuntime(stream, host)
 	for !runtime.readyToExit() {
-		nextStdout, nextClient, err := s.processAttachEvent(runtime, userID, stdoutCh, clientCh, exitCh)
+		nextStdout, nextClient, err := s.processAttachEvent(runtime, userID, sessionID, stdoutCh, clientCh, exitCh)
 		if err != nil {
 			return normalizeApplicationStop(err)
 		}
@@ -239,6 +283,7 @@ func (s *Service) runAttached(stream grpcBidiStream, userID string, host Host) e
 func (s *Service) processAttachEvent(
 	runtime *attachRuntime,
 	userID string,
+	sessionID string,
 	stdoutCh chan stdoutEvent,
 	clientCh chan clientEvent,
 	exitCh chan exitEvent,
@@ -251,6 +296,7 @@ func (s *Service) processAttachEvent(
 		nextClient, err := s.handleClientEvent(runtime, userID, clientCh, result, ok)
 		return stdoutCh, nextClient, err
 	case result := <-exitCh:
+		s.logPTYExited(userID, sessionID, result)
 		return stdoutCh, clientCh, runtime.handleExitEvent(result)
 	}
 }
@@ -330,6 +376,42 @@ func (s *Service) handleClientResize(
 		return false, remotefsv1.Error_KIND_INTERNAL, err
 	}
 	return false, 0, nil
+}
+
+func (s *Service) logAttachRequested(userID string, attach *remotefsv1.AttachReq) {
+	size := attach.GetInitialSize()
+	s.cfg.Logger.Info("pty attach requested",
+		"user_id", userID,
+		"term", attach.GetTerm(),
+		"cols", size.GetCols(),
+		"rows", size.GetRows(),
+	)
+}
+
+func (s *Service) logAttachRejected(userID string, reason string, err error) {
+	attrs := []any{
+		"user_id", userID,
+		"reason", reason,
+	}
+	if err != nil {
+		attrs = append(attrs, "err", err)
+	}
+	s.cfg.Logger.Warn("pty attach rejected", attrs...)
+}
+
+func (s *Service) logPTYExited(userID string, sessionID string, result exitEvent) {
+	attrs := []any{
+		"user_id", userID,
+		"session_id", sessionID,
+		"code", result.info.Code,
+		"signal", result.info.Signal,
+	}
+	if result.err != nil {
+		attrs = append(attrs, "err", result.err)
+		s.cfg.Logger.Warn("pty exited", attrs...)
+		return
+	}
+	s.cfg.Logger.Info("pty exited", attrs...)
 }
 
 func sendApplicationError(stream grpcBidiStream, kind remotefsv1.Error_Kind, message string) error {

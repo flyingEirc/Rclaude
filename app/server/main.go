@@ -83,7 +83,7 @@ func runPreparedServer(
 		warnClose(logger, "close fuse mount", mounted.Close(), os.ErrClosed)
 	}()
 
-	ptyService, err := newPTYService(cfg, manager)
+	ptyService, err := newPTYService(cfg, manager, logger)
 	if err != nil {
 		return fmt.Errorf("server: build pty service: %w", err)
 	}

@@ -9,7 +9,7 @@ import (
 	"flyingEirc/Rclaude/pkg/session"
 )
 
-func startPrefetch(_ context.Context, manager *session.Manager, userID string, infos []*remotefsv1.FileInfo) {
+func startPrefetch(ctx context.Context, manager *session.Manager, userID string, infos []*remotefsv1.FileInfo) {
 	current, err := requireSession(manager, userID)
 	if err != nil || current.IsOfflineReadonly(time.Time{}) {
 		return
@@ -20,7 +20,7 @@ func startPrefetch(_ context.Context, manager *session.Manager, userID string, i
 		if info == nil || !current.TryStartPrefetch(info.GetPath()) {
 			continue
 		}
-		go prefetchFile(manager, current, info)
+		go prefetchFile(ctx, manager, current, info)
 	}
 }
 
@@ -69,7 +69,7 @@ func shouldPrefetchFile(
 	return !cached
 }
 
-func prefetchFile(manager *session.Manager, current *session.Session, info *remotefsv1.FileInfo) {
+func prefetchFile(ctx context.Context, manager *session.Manager, current *session.Session, info *remotefsv1.FileInfo) {
 	if current == nil || info == nil {
 		return
 	}
@@ -81,7 +81,7 @@ func prefetchFile(manager *session.Manager, current *session.Session, info *remo
 		return
 	}
 
-	data, err := requestRead(context.Background(), manager, current, relPath, 0, 0)
+	data, err := requestRead(ctx, manager, current, relPath, 0, 0)
 	if err != nil {
 		return
 	}

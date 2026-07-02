@@ -7,6 +7,8 @@ fuse:
 pty:
   # Use "claude" for the real entry. For scripted transport smoke, temporarily switch to "/bin/sh".
   binary: "claude"
+  # Optional server-side argv appended after pty.binary. The client cannot override this.
+  args: []
   workspace_root: "/workspace"
   env_passthrough:
     - "TERM"
@@ -14,6 +16,12 @@ pty:
     - "LC_ALL"
     - "LC_CTYPE"
     - "PATH"
+    - "HOME"
+    - "SHELL"
+    - "CLAUDE_CONFIG_DIR"
+    # Optional for Server-side env-based Claude auth/gateway routing:
+    # - "ANTHROPIC_*"
+    # - "CLAUDE_CODE_*"
   frame_max_bytes: 65536
   graceful_shutdown_timeout: "5s"
   ratelimit:

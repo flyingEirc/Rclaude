@@ -9,7 +9,7 @@ Modes:
   default / RCLAUDE_PTY_MODE=manual
       Run rclaude-claude directly for a human check of the real claude entry.
   RCLAUDE_PTY_MODE=scripted
-      Drive one repeatable shell smoke via script(1).
+      Drive one repeatable shell smoke via util-linux script(1) with -c support.
       This mode expects server-side pty.binary to point at a shell such as /bin/sh.
 
 Optional environment:
@@ -19,6 +19,9 @@ Optional environment:
   RCLAUDE_PTY_EXPECT       Expected marker in transcript. Default: __RCLAUDE_PTY_SMOKE__.
   RCLAUDE_PTY_EXPECT_EXIT  Expected exit code in scripted mode. Default: 7.
   RCLAUDE_PTY_EXPECT_CWD   Optional substring that must appear in the transcript.
+  RCLAUDE_PTY_EXPECT_FILE  Optional file path, relative to the remote PTY cwd, to cat during scripted mode.
+  RCLAUDE_PTY_EXPECT_FILE_CONTAINS
+                            Optional substring expected from RCLAUDE_PTY_EXPECT_FILE.
 EOF
   exit 2
 }
@@ -46,6 +49,10 @@ strip_quotes() {
   printf '%s' "$1" | tr -d '"'
 }
 
+shell_quote() {
+  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
 make_launcher() {
   launcher_path=$1
 
@@ -58,12 +65,36 @@ EOF
 
 build_default_input() {
   input_path=$1
+
   cat > "$input_path" <<'EOF'
 printf '__RCLAUDE_PTY_SMOKE__\n'
 stty size
 pwd
-exit 7
 EOF
+
+  if [ -n "${RCLAUDE_PTY_EXPECT_FILE:-}" ]; then
+    quoted_file=$(shell_quote "$RCLAUDE_PTY_EXPECT_FILE")
+    {
+      printf "printf '__RCLAUDE_PTY_FILE__\\n'\n"
+      printf 'cat -- %s || exit 97\n' "$quoted_file"
+    } >> "$input_path"
+  fi
+
+  printf 'exit %s\n' "${RCLAUDE_PTY_EXPECT_EXIT:-7}" >> "$input_path"
+}
+
+run_script_command() {
+  launcher_path=$1
+  transcript_path=$2
+  input_path=$3
+
+  if script -qefc "true" /dev/null >/dev/null 2>&1; then
+    script -qefc "$launcher_path" "$transcript_path" < "$input_path"
+    return $?
+  fi
+
+  echo "scripted mode requires util-linux script(1) with -c support" >&2
+  exit 1
 }
 
 if [ "$#" -ne 1 ]; then
@@ -127,6 +158,8 @@ EOF
     input_file=${RCLAUDE_PTY_INPUT_FILE:-}
     expected=${RCLAUDE_PTY_EXPECT:-__RCLAUDE_PTY_SMOKE__}
     expected_exit=${RCLAUDE_PTY_EXPECT_EXIT:-7}
+    expected_file=${RCLAUDE_PTY_EXPECT_FILE:-}
+    expected_file_contains=${RCLAUDE_PTY_EXPECT_FILE_CONTAINS:-}
     generated_input=0
 
     cleanup() {
@@ -148,7 +181,7 @@ EOF
     echo "transcript: $transcript"
     echo "input: $input_file"
 
-    if script -qefc "$launcher" "$transcript" < "$input_file"; then
+    if run_script_command "$launcher" "$transcript" "$input_file"; then
       status=0
     else
       status=$?
@@ -168,6 +201,19 @@ EOF
       ! grep -F "$RCLAUDE_PTY_EXPECT_CWD" "$transcript" >/dev/null 2>&1; then
       echo "expected cwd marker not found in transcript: $RCLAUDE_PTY_EXPECT_CWD" >&2
       exit 1
+    fi
+
+    if [ -n "$expected_file" ]; then
+      if ! grep -F "__RCLAUDE_PTY_FILE__" "$transcript" >/dev/null 2>&1; then
+        echo "expected file-read marker not found in transcript" >&2
+        exit 1
+      fi
+
+      if [ -n "$expected_file_contains" ] &&
+        ! grep -F "$expected_file_contains" "$transcript" >/dev/null 2>&1; then
+        echo "expected file content marker not found in transcript: $expected_file_contains" >&2
+        exit 1
+      fi
     fi
 
     echo "scripted PTY smoke passed"

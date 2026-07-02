@@ -304,7 +304,7 @@ func (c *Client) forwardStdinChunk(ctx context.Context, outbound chan<- sendRequ
 
 func normalizeReadErr(err error) error {
 	switch {
-	case errors.Is(err, io.EOF), errors.Is(err, context.Canceled):
+	case errors.Is(err, io.EOF), errors.Is(err, io.ErrClosedPipe), errors.Is(err, context.Canceled):
 		return nil
 	default:
 		return err

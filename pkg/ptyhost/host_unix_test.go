@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -64,6 +65,49 @@ func TestSpawn_BinaryNotFound(t *testing.T) {
 		InitSize: ptyhost.WindowSize{Cols: 80, Rows: 24},
 	})
 	require.Error(t, err)
+}
+
+func TestSpawn_ForwardsArgsAfterChangingToCwd(t *testing.T) {
+	t.Parallel()
+
+	cwd := t.TempDir()
+	h, err := ptyhost.Spawn(ptyhost.SpawnReq{
+		Binary: "/bin/sh",
+		Args: []string{
+			"-c",
+			`printf 'arg=<%s> cwd=<%s>\n' "$1" "$PWD"`,
+			"rclaude-test",
+			"value with spaces",
+		},
+		Cwd:      cwd,
+		Env:      []string{"PATH=/usr/bin:/bin"},
+		InitSize: ptyhost.WindowSize{Cols: 80, Rows: 24},
+	})
+	require.NoError(t, err)
+
+	var buf bytes.Buffer
+	var wg sync.WaitGroup
+	errCh := make(chan error, 1)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, copyErr := io.Copy(&buf, h.Stdout())
+		errCh <- copyErr
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	info, err := h.Wait(ctx)
+	if err != nil {
+		require.NoError(t, h.Shutdown(false))
+	}
+	require.NoError(t, err)
+	assert.Equal(t, int32(0), info.Code)
+
+	wg.Wait()
+	require.NoError(t, <-errCh)
+	assert.Contains(t, buf.String(), "arg=<value with spaces>")
+	assert.Contains(t, buf.String(), "cwd=<"+filepath.Clean(cwd)+">")
 }
 
 func TestSpawn_CwdMustExist(t *testing.T) {

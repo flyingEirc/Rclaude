@@ -217,6 +217,24 @@ log:
 	assert.Equal(t, config.DefaultPrefetchMaxFilesPerDir, cfg.Prefetch.MaxFilesPerDir)
 }
 
+func TestLoadServerTokenMayContainDots(t *testing.T) {
+	t.Parallel()
+
+	dottedAuthKey := "opaque.value.with.dots"
+	body := `
+listen: ":9000"
+auth:
+  tokens:
+    ` + escapeYAML(dottedAuthKey) + `: "alice"
+fuse:
+  mountpoint: ` + escapeYAML(absMountpoint()) + `
+`
+	path := writeYAML(t, "server.yaml", body)
+	cfg, err := config.LoadServer(path)
+	require.NoError(t, err)
+	assert.Equal(t, "alice", cfg.Auth.Tokens[dottedAuthKey])
+}
+
 func TestLoadServerMissingListen(t *testing.T) {
 	t.Parallel()
 	body := `
@@ -311,8 +329,12 @@ fuse:
 	cfg, err := config.LoadServer(path)
 	require.NoError(t, err)
 	assert.Equal(t, config.DefaultPTYBinary, cfg.PTY.Binary)
+	assert.Empty(t, cfg.PTY.Args)
 	assert.Equal(t, config.DefaultPTYWorkspaceRoot, cfg.PTY.WorkspaceRoot)
 	assert.Equal(t, config.DefaultPTYEnvPassthrough, cfg.PTY.EnvPassthrough)
+	assert.Contains(t, cfg.PTY.EnvPassthrough, "HOME")
+	assert.Contains(t, cfg.PTY.EnvPassthrough, "SHELL")
+	assert.Contains(t, cfg.PTY.EnvPassthrough, "CLAUDE_CONFIG_DIR")
 	assert.Equal(t, config.DefaultPTYFrameMaxBytes, cfg.PTY.FrameMaxBytes)
 	assert.Equal(t, config.DefaultPTYGracefulShutdown, cfg.PTY.GracefulShutdownTimeout)
 	assert.Equal(t, config.DefaultPTYAttachQPS, cfg.PTY.RateLimit.AttachQPS)
@@ -333,6 +355,7 @@ fuse:
   mountpoint: ` + escapeYAML(absMountpoint()) + `
 pty:
   binary: "/usr/local/bin/claude"
+  args: ["--model", "sonnet"]
   workspace_root: "/srv/workspace"
   env_passthrough: ["TERM", "PATH"]
   frame_max_bytes: 32768
@@ -347,6 +370,7 @@ pty:
 	cfg, err := config.LoadServer(path)
 	require.NoError(t, err)
 	assert.Equal(t, "/usr/local/bin/claude", cfg.PTY.Binary)
+	assert.Equal(t, []string{"--model", "sonnet"}, cfg.PTY.Args)
 	assert.Equal(t, "/srv/workspace", cfg.PTY.WorkspaceRoot)
 	assert.Equal(t, []string{"TERM", "PATH"}, cfg.PTY.EnvPassthrough)
 	assert.EqualValues(t, 32768, cfg.PTY.FrameMaxBytes)

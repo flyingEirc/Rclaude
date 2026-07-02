@@ -3,6 +3,7 @@ package ptyhost
 import (
 	"errors"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -50,20 +51,17 @@ func ResolveCwd(workspaceRoot, userID string) (string, error) {
 // the given whitelist drawn from source. clientTerm overrides TERM only when
 // it contains a conservative terminal-name character set.
 func BuildEnv(source map[string]string, whitelist []string, clientTerm string) []string {
-	allow := make(map[string]struct{}, len(whitelist))
-	for _, key := range whitelist {
-		allow[key] = struct{}{}
-	}
+	exact, patterns := compileEnvAllowlist(whitelist)
 
-	out := make([]string, 0, len(allow))
+	out := make([]string, 0, len(source))
 	for key, value := range source {
-		if _, ok := allow[key]; !ok {
+		if !envKeyAllowed(key, exact, patterns) {
 			continue
 		}
 		out = append(out, key+"="+value)
 	}
 
-	if _, ok := allow["TERM"]; ok && isSafeTerm(clientTerm) {
+	if envKeyAllowed("TERM", exact, patterns) && isSafeTerm(clientTerm) {
 		filtered := out[:0]
 		for _, kv := range out {
 			if strings.HasPrefix(kv, "TERM=") {
@@ -76,6 +74,40 @@ func BuildEnv(source map[string]string, whitelist []string, clientTerm string) [
 
 	sort.Strings(out)
 	return out
+}
+
+func compileEnvAllowlist(whitelist []string) (map[string]struct{}, []string) {
+	exact := make(map[string]struct{}, len(whitelist))
+	patterns := make([]string, 0)
+
+	for _, entry := range whitelist {
+		key := strings.TrimSpace(entry)
+		if key == "" {
+			continue
+		}
+		if strings.ContainsAny(key, "*?[") {
+			patterns = append(patterns, key)
+			continue
+		}
+		exact[key] = struct{}{}
+	}
+
+	return exact, patterns
+}
+
+func envKeyAllowed(key string, exact map[string]struct{}, patterns []string) bool {
+	if _, ok := exact[key]; ok {
+		return true
+	}
+
+	for _, pattern := range patterns {
+		matched, err := path.Match(pattern, key)
+		if err == nil && matched {
+			return true
+		}
+	}
+
+	return false
 }
 
 // ResolveBinary returns an absolute path to the given binary name. Absolute

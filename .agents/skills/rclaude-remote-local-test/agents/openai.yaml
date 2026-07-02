@@ -1,0 +1,4 @@
+interface:
+  display_name: "Rclaude Remote Local Test"
+  short_description: "Rclaude dual-machine integration runbook"
+  default_prompt: "Use $rclaude-remote-local-test to prepare or run the Rclaude remote/local integration test."

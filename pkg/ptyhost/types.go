@@ -12,6 +12,7 @@ var ErrUnsupportedPlatform = errors.New("ptyhost: PTY spawn is unsupported on th
 // SpawnReq describes how to launch a PTY-bound child process.
 type SpawnReq struct {
 	Binary   string
+	Args     []string
 	Cwd      string
 	Env      []string
 	InitSize WindowSize

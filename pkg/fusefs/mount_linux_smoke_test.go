@@ -6,16 +6,20 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"flyingEirc/Rclaude/internal/inmemtest"
 )
+
+const defaultFuseCommandTimeout = 30 * time.Second
 
 func TestMount_LinuxSmoke(t *testing.T) {
 	harness := inmemtest.NewHarness(t)
@@ -68,6 +72,50 @@ func TestMount_LinuxSmoke(t *testing.T) {
 	rootEntries, err = os.ReadDir(mountpoint)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"user-a", "user-b"}, dirEntryNames(rootEntries))
+}
+
+func TestMount_LinuxSmoke_CwdAndGoList(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skipf("skip Go cwd smoke test: %v", err)
+	}
+
+	daemonRoot := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(daemonRoot, "go.mod"), []byte("module example.com/rclaude-smoke\n\ngo 1.25\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(daemonRoot, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o644))
+
+	harness := inmemtest.NewHarness(t)
+	defer harness.Cleanup()
+
+	user := harness.AddUser(inmemtest.UserOptions{UserID: "user-a", DaemonRoot: daemonRoot})
+
+	mountpoint := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	mounted := mountOrSkip(t, ctx, Options{
+		Mountpoint: mountpoint,
+		Manager:    harness.Manager,
+	})
+	defer func() {
+		assert.NoError(t, mounted.Close())
+	}()
+
+	workspace := filepath.Join(mountpoint, user.UserID)
+	cmdCtx, cmdCancel := context.WithTimeout(context.Background(), defaultFuseCommandTimeout)
+	defer cmdCancel()
+
+	cmd := exec.CommandContext(cmdCtx, "/bin/sh", "-c", `cd -- "$1" && pwd && go list ./...`, "rclaude-fuse-cwd", workspace)
+	cmd.Dir = string(os.PathSeparator)
+	cmd.Env = append(os.Environ(),
+		"GOCACHE="+t.TempDir(),
+		"GOMODCACHE="+t.TempDir(),
+		"GOPATH="+t.TempDir(),
+		"GOWORK=off",
+	)
+	out, err := cmd.CombinedOutput()
+	require.NoErrorf(t, err, "command output:\n%s", string(out))
+	assert.Contains(t, string(out), workspace)
+	assert.Contains(t, string(out), "example.com/rclaude-smoke")
 }
 
 func mountOrSkip(t *testing.T, ctx context.Context, opts Options) Mounted {

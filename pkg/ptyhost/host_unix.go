@@ -84,7 +84,7 @@ func commandForSpawn(req SpawnReq) (*exec.Cmd, error) {
 	}
 
 	if strings.TrimSpace(req.Cwd) == "" {
-		return exec.Command(binary), nil //nolint:gosec // binary has been resolved with exec.LookPath above.
+		return exec.Command(binary, req.Args...), nil //nolint:gosec // binary has been resolved with exec.LookPath above.
 	}
 	if err := validateCwd(req.Cwd); err != nil {
 		return nil, err
@@ -94,8 +94,15 @@ func commandForSpawn(req SpawnReq) (*exec.Cmd, error) {
 	// the child before exec, while the parent waits for exec to finish; if the
 	// cwd is served by this process' own FUSE server, that pre-exec chdir can
 	// deadlock the PTY attach. Exec /bin/sh first, then cd inside the child.
-	//nolint:gosec // shell source is fixed; cwd and resolved binary are passed as positional args.
-	cmd := exec.Command("/bin/sh", "-c", `cd -- "$1" && exec "$2"`, "rclaude-pty", req.Cwd, binary)
+	args := append([]string{
+		"-c",
+		`cd -- "$1" && shift && exec "$@"`,
+		"rclaude-pty",
+		req.Cwd,
+		binary,
+	}, req.Args...)
+	//nolint:gosec // shell source is fixed; cwd, resolved binary, and argv are passed as positional args.
+	cmd := exec.Command("/bin/sh", args...)
 	cmd.Dir = string(os.PathSeparator)
 	return cmd, nil
 }

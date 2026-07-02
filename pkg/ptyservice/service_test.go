@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -91,6 +92,28 @@ func TestAttach_HappyPathForwardsIOAndExit(t *testing.T) {
 	assert.True(t, host.shutdownCalled)
 }
 
+func TestAttach_PassesConfiguredArgsToSpawner(t *testing.T) {
+	t.Parallel()
+
+	stream := newFakeStream(auth.WithUserID(context.Background(), "alice"))
+	stream.pushClient(attachFrame())
+	stream.pushClient(&remotefsv1.ClientFrame{
+		Payload: &remotefsv1.ClientFrame_Detach{Detach: &remotefsv1.Detach{}},
+	})
+
+	spawner := &capturingSpawner{host: newFakeHost()}
+	svc := newService(
+		t,
+		fakeRegistry{daemonOnline: true},
+		withSpawner(spawner),
+		withArgs([]string{"--model", "sonnet"}),
+	)
+	require.NoError(t, svc.Attach(stream))
+
+	require.NotNil(t, spawner.req)
+	assert.Equal(t, []string{"--model", "sonnet"}, spawner.req.Args)
+}
+
 func TestAttach_TooLargeStdinTriggersProtocolError(t *testing.T) {
 	t.Parallel()
 
@@ -160,6 +183,86 @@ func TestAttach_StdinRateLimitedReturnsApplicationError(t *testing.T) {
 	assert.Empty(t, host.stdin.String())
 }
 
+func TestAttach_SpawnFailureIncludesConfiguredBinary(t *testing.T) {
+	t.Parallel()
+
+	stream := newFakeStream(auth.WithUserID(context.Background(), "alice"))
+	stream.pushClient(attachFrame())
+
+	svc := newService(
+		t,
+		fakeRegistry{daemonOnline: true},
+		withBinary("definitely-not-a-real-binary-zzz"),
+	)
+	require.NoError(t, svc.Attach(stream))
+
+	frames := stream.serverFrames()
+	require.Len(t, frames, 1)
+	errFrame := frames[0].GetError()
+	require.NotNil(t, errFrame)
+	assert.Equal(t, remotefsv1.Error_KIND_SPAWN_FAILED, errFrame.GetKind())
+	assert.Contains(t, errFrame.GetMessage(), `resolve pty binary "definitely-not-a-real-binary-zzz"`)
+}
+
+func TestAttach_LogsSpawnFailureWithContext(t *testing.T) {
+	t.Parallel()
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	stream := newFakeStream(auth.WithUserID(context.Background(), "alice"))
+	stream.pushClient(attachFrame())
+
+	svc := newService(
+		t,
+		fakeRegistry{daemonOnline: true},
+		withBinary("definitely-not-a-real-binary-zzz"),
+		withLogger(logger),
+	)
+	require.NoError(t, svc.Attach(stream))
+
+	got := logs.String()
+	assert.Contains(t, got, "pty attach requested")
+	assert.Contains(t, got, "pty spawn failed")
+	assert.Contains(t, got, "user_id=alice")
+	assert.Contains(t, got, "binary=definitely-not-a-real-binary-zzz")
+	assert.NotContains(t, got, "token")
+}
+
+func TestAttach_HappyPathLogsLifecycle(t *testing.T) {
+	t.Parallel()
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	stream := newFakeStream(auth.WithUserID(context.Background(), "alice"))
+	stream.pushClient(attachFrame())
+	stream.pushClient(&remotefsv1.ClientFrame{
+		Payload: &remotefsv1.ClientFrame_Detach{Detach: &remotefsv1.Detach{}},
+	})
+
+	host := newFakeHost()
+	svc := newService(
+		t,
+		fakeRegistry{daemonOnline: true, sessionID: "pty-1"},
+		withSpawner(fakeSpawner{host: host}),
+		withArgs([]string{"--model", "sonnet"}),
+		withLogger(logger),
+	)
+	require.NoError(t, svc.Attach(stream))
+
+	got := logs.String()
+	assert.Contains(t, got, "pty attach requested")
+	assert.Contains(t, got, "pty spawn starting")
+	assert.Contains(t, got, "pty attached")
+	assert.Contains(t, got, "pty exited")
+	assert.Contains(t, got, "user_id=alice")
+	assert.Contains(t, got, "session_id=pty-1")
+	assert.Contains(t, got, "args_count=2")
+	assert.Contains(t, got, "code=0")
+	assert.NotContains(t, got, "token")
+}
+
 func newService(t *testing.T, registry ptyservice.Registry, opts ...serviceOption) *ptyservice.Service {
 	t.Helper()
 
@@ -182,7 +285,7 @@ func newService(t *testing.T, registry ptyservice.Registry, opts ...serviceOptio
 
 type serviceOption func(*ptyservice.Config)
 
-func withSpawner(spawner fakeSpawner) serviceOption {
+func withSpawner(spawner ptyservice.Spawner) serviceOption {
 	return func(cfg *ptyservice.Config) {
 		cfg.Spawner = spawner
 	}
@@ -191,6 +294,24 @@ func withSpawner(spawner fakeSpawner) serviceOption {
 func withFrameMax(n int64) serviceOption {
 	return func(cfg *ptyservice.Config) {
 		cfg.FrameMax = n
+	}
+}
+
+func withArgs(args []string) serviceOption {
+	return func(cfg *ptyservice.Config) {
+		cfg.Args = args
+	}
+}
+
+func withBinary(binary string) serviceOption {
+	return func(cfg *ptyservice.Config) {
+		cfg.Binary = binary
+	}
+}
+
+func withLogger(logger *slog.Logger) serviceOption {
+	return func(cfg *ptyservice.Config) {
+		cfg.Logger = logger
 	}
 }
 
@@ -301,6 +422,16 @@ func (s fakeSpawner) Spawn(_ ptyhost.SpawnReq) (ptyservice.Host, error) {
 	if s.err != nil {
 		return nil, s.err
 	}
+	return s.host, nil
+}
+
+type capturingSpawner struct {
+	host *fakeHost
+	req  *ptyhost.SpawnReq
+}
+
+func (s *capturingSpawner) Spawn(req ptyhost.SpawnReq) (ptyservice.Host, error) {
+	s.req = &req
 	return s.host, nil
 }
 
