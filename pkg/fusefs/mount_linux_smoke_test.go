@@ -80,8 +80,8 @@ func TestMount_LinuxSmoke_CwdAndGoList(t *testing.T) {
 	}
 
 	daemonRoot := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(daemonRoot, "go.mod"), []byte("module example.com/rclaude-smoke\n\ngo 1.25\n"), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(daemonRoot, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(daemonRoot, "go.mod"), []byte("module example.com/rclaude-smoke\n\ngo 1.25\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(daemonRoot, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o600))
 
 	harness := inmemtest.NewHarness(t)
 	defer harness.Cleanup()
@@ -104,8 +104,14 @@ func TestMount_LinuxSmoke_CwdAndGoList(t *testing.T) {
 	cmdCtx, cmdCancel := context.WithTimeout(context.Background(), defaultFuseCommandTimeout)
 	defer cmdCancel()
 
-	cmd := exec.CommandContext(cmdCtx, "/bin/sh", "-c", `cd -- "$1" && pwd && go list ./...`, "rclaude-fuse-cwd", workspace)
-	cmd.Dir = string(os.PathSeparator)
+	pwdCmd := exec.CommandContext(cmdCtx, "/bin/pwd")
+	pwdCmd.Dir = workspace
+	pwdOut, err := pwdCmd.CombinedOutput()
+	require.NoErrorf(t, err, "pwd output:\n%s", string(pwdOut))
+	assert.Equal(t, workspace, strings.TrimSpace(string(pwdOut)))
+
+	cmd := exec.CommandContext(cmdCtx, "go", "list", "./...")
+	cmd.Dir = workspace
 	cmd.Env = append(os.Environ(),
 		"GOCACHE="+t.TempDir(),
 		"GOMODCACHE="+t.TempDir(),
@@ -114,7 +120,6 @@ func TestMount_LinuxSmoke_CwdAndGoList(t *testing.T) {
 	)
 	out, err := cmd.CombinedOutput()
 	require.NoErrorf(t, err, "command output:\n%s", string(out))
-	assert.Contains(t, string(out), workspace)
 	assert.Contains(t, string(out), "example.com/rclaude-smoke")
 }
 

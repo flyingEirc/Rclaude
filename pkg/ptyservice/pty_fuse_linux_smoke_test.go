@@ -34,7 +34,7 @@ func TestAttachOverGRPC_LinuxSmoke_PTYReadsDaemonBackedFUSEFile(t *testing.T) {
 	require.NoError(t, os.WriteFile(
 		filepath.Join(daemonRoot, "README.md"),
 		[]byte("hello from daemon workspace\n"),
-		0o644,
+		0o600,
 	))
 
 	harness := inmemtest.NewHarness(t)
