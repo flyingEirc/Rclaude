@@ -1,5 +1,7 @@
 # Rclaude
 
+Language: [中文](#rclaude) | [English](#english-version)
+
 `Rclaude` 是一个远程文件访问系统。它的目标不是“同步一份代码副本到云端”，而是让云端执行环境直接通过普通文件路径访问用户本地工作区。
 
 对执行侧来说，文件依然表现为“本地文件系统上的真实路径”；对系统来说，真正的数据来源仍然是用户本地机器上的工作区。
@@ -36,6 +38,8 @@
 - 工作区边界保护：路径校验、防路径穿越、限制只访问指定 workspace
 - 配置加载与环境变量覆盖：基于 YAML + `RCLAUDE_*` 环境变量
 - 静态 token 鉴权：token 映射到 `user_id`
+- 远程 PTY：本地 `rclaude-claude` 可 attach 到 Server 侧 PTY 进程
+- Server 侧 Agent 入口：通过 `pty.binary` / `pty.args` 启动 `claude`、`codex` 或 shell 类工具
 
 ## 架构概览
 
@@ -74,11 +78,12 @@ rclaude-server
 - Server 端缓存和预取是架构内的一等能力，不是附加优化
 - 执行环境的兼容目标是“普通文件路径语义”，而不是某个特定模型或 Agent
 
-更完整的背景与方案对比见：
+更完整的背景、部署和验收记录见：
 
-- [docs/design/PLAN.md](docs/design/PLAN.md)
-- [docs/design/ROADMAP.md](docs/design/ROADMAP.md)
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- [deploy/minimal/README.md](deploy/minimal/README.md)
+- [docs/reference/claude-code-pty-adapter.md](docs/reference/claude-code-pty-adapter.md)
+- [docs/exec-plan/active/202607020936-fuse-cwd-pty-adapter/remote-linkage-report.md](docs/exec-plan/active/202607020936-fuse-cwd-pty-adapter/remote-linkage-report.md)
+- [docs/exec-plan/active/202607021406-remote-codex-smoke/plan.md](docs/exec-plan/active/202607021406-remote-codex-smoke/plan.md)
 
 ## 平台与运行要求
 
@@ -110,7 +115,7 @@ pkg/syncer/             daemon 侧同步、扫描、监听、请求处理
 pkg/transport/          gRPC 连接与 stream 封装
 pkg/ratelimit/          daemon 侧字节限流
 internal/inmemtest/     in-memory 端到端测试夹具
-docs/                   设计、架构、工作流、执行记录
+docs/                   参考资料与阶段执行记录
 ```
 
 ## 构建
@@ -272,6 +277,70 @@ export RCLAUDE_SERVER_ADDRESS=127.0.0.1:9999
 - `server.address` -> `RCLAUDE_SERVER_ADDRESS`
 - `fuse.mountpoint` -> `RCLAUDE_FUSE_MOUNTPOINT`
 
+## 远程 PTY 与 Agent 入口
+
+Rclaude 的交互 Agent 适配保持两条链路分离：
+
+- 文件链路：`rclaude-daemon` 通过 `RemoteFS.Connect` 把本地 workspace 暴露给 Server，Server 再通过 FUSE 提供 `/workspace/{user_id}`。
+- 终端链路：`rclaude-claude` 通过 `RemotePTY.Attach` 只转发终端字节流、窗口尺寸、退出码和错误帧。
+
+Server 会在 `/workspace/{user_id}` 中启动 `pty.binary`。这意味着真正运行 `claude` 或 `codex` 的机器是 Server，不是 daemon 所在机器；Server OS user 必须能找到对应二进制，并具备该 CLI 所需的登录态或环境变量。
+
+Server 配置示例：
+
+```yaml
+pty:
+  binary: "claude"
+  args: []
+  workspace_root: "/workspace"
+  env_passthrough:
+    - "TERM"
+    - "LANG"
+    - "LC_ALL"
+    - "LC_CTYPE"
+    - "PATH"
+    - "HOME"
+    - "SHELL"
+    - "CLAUDE_CONFIG_DIR"
+  frame_max_bytes: 65536
+```
+
+要切换到 Codex，可以把 `pty.binary` 改成 Server 侧可执行路径，例如：
+
+```yaml
+pty:
+  binary: "/root/.local/bin/codex"
+  args: []
+  workspace_root: "/workspace"
+```
+
+如果要做可重复的 Codex 文件读取验收，也可以让 Server 固定启动 `codex exec`：
+
+```yaml
+pty:
+  binary: "/root/.local/bin/codex"
+  args:
+    - "exec"
+    - "--skip-git-repo-check"
+    - "--sandbox"
+    - "read-only"
+    - "Read README.md in the current directory and reply with the exact first line only."
+```
+
+本仓库包含一组最小双机部署和验收脚本，详见 [deploy/minimal/README.md](deploy/minimal/README.md)。推荐验收顺序：
+
+1. 在 Server 侧运行 `preflight-server.sh`，确认 Linux、FUSE、mountpoint 和 `pty.binary`。
+2. 在 daemon 侧运行 `preflight-daemon.sh`，确认 Server 地址、token、本地 workspace 和客户端二进制。
+3. 在 Server 侧运行 `smoke-remote.sh <user_id> <expected_file>`，先证明 `/workspace/{user_id}` 文件面可读写。
+4. 临时把 `pty.binary` 指向 `/bin/sh`，运行 `RCLAUDE_PTY_MODE=scripted tools/pty-smoke.sh <daemon.yaml>`，证明 PTY 传输面和 FUSE 文件读取。
+5. 恢复 `pty.binary` 为 `claude`、`codex` 或目标 CLI，运行 `deploy/minimal/start-pty.sh <daemon.yaml>` 做真实交互验收。
+
+当前实测状态：
+
+- `/bin/sh` scripted PTY + FUSE 文件读取已通过。
+- Codex CLI TUI attach、cwd `/workspace/{user_id}`、`codex exec` 读取 daemon-backed FUSE 文件、远端 code `0` 回传已通过。
+- Claude Code TUI 可以通过 RemotePTY 渲染，但主提示符验收取决于 Server OS user 的 Claude Code onboarding/login 状态；daemon 机器上的 Claude 登录态不会自动复用到 Server。
+
 ## 测试与开发命令
 
 本仓库约定的标准流程：
@@ -312,17 +381,363 @@ go build ./...
 
 ## 文档入口
 
-- 设计总方案：[docs/design/PLAN.md](docs/design/PLAN.md)
-- 系统级路线图：[docs/design/ROADMAP.md](docs/design/ROADMAP.md)
-- 当前实现架构：[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
-- 开发工作流：[docs/workflow.md](docs/workflow.md)
-- 文档治理说明：[docs/README.md](docs/README.md)
-- 已完成阶段记录：[docs/exec-plan/completed/README.md](docs/exec-plan/completed/README.md)
+- 最小双机部署：[deploy/minimal/README.md](deploy/minimal/README.md)
+- Claude Code PTY 适配参考：[docs/reference/claude-code-pty-adapter.md](docs/reference/claude-code-pty-adapter.md)
+- FUSE cwd / PTY adapter 联动报告：[docs/exec-plan/active/202607020936-fuse-cwd-pty-adapter/remote-linkage-report.md](docs/exec-plan/active/202607020936-fuse-cwd-pty-adapter/remote-linkage-report.md)
+- Codex smoke 阶段计划：[docs/exec-plan/active/202607021406-remote-codex-smoke/plan.md](docs/exec-plan/active/202607021406-remote-codex-smoke/plan.md)
+- 当前阶段执行记录：[docs/exec-plan/active/](docs/exec-plan/active/)
 
 如果你要继续开发这个项目，建议按下面顺序阅读：
 
-1. `docs/design/PLAN.md`
-2. `docs/design/ROADMAP.md`
-3. `docs/ARCHITECTURE.md`
-4. `docs/workflow.md`
-5. 最新的 `docs/exec-plan/completed/{时间}-{阶段名}/`
+1. `README.md`
+2. `deploy/minimal/README.md`
+3. `docs/reference/claude-code-pty-adapter.md`
+4. 最新的 `docs/exec-plan/active/{时间}-{阶段名}/plan.md`
+5. 对应阶段的 `开发流程.md` 和 `测试错误.md`
+
+# English Version
+
+`Rclaude` is a remote file access system. Its goal is not to copy a whole workspace to a cloud machine. Instead, it lets a remote execution environment access a user's local workspace through ordinary file paths.
+
+From the execution side, files still look like normal local filesystem paths. From the system side, the actual source of data remains the user's local machine.
+
+Typical flow:
+
+- A cloud Agent or task runner executes `cat /workspace/alice/main.go`.
+- The Server-side FUSE filesystem handles that path.
+- The request is forwarded over a bidirectional gRPC stream to Alice's local daemon.
+- The daemon reads Alice's real local file and returns the content.
+
+This keeps standard shell tools such as `cat`, `sed`, `grep`, `ls`, `stat`, `mv`, and `rm` usable without a custom file SDK.
+
+## Current Capabilities
+
+The current codebase already provides a working main path:
+
+- `rclaude-daemon` scans a local workspace and connects to the Server with a bidirectional gRPC stream.
+- The Server tracks user sessions, file-tree metadata, and content cache.
+- On Linux, the Server exposes a FUSE view at `/workspace/{user_id}/`.
+- The execution environment can use ordinary filesystem commands against that mount.
+
+Implemented features include:
+
+- read operations: `Lookup`, `Getattr`, `Readdir`, `Open`, `Read`
+- write operations: create, overwrite, offset write, append, `mkdir`, `rename`, `delete`, `truncate`
+- per-user isolation under `/workspace/{user_id}/`
+- file-tree cache for directory and attribute lookups
+- whole-file content cache
+- small-file prefetch after directory reads
+- temporary read-only fallback from cache after daemon disconnect
+- sensitive-file filtering for `.env`, private keys, certificates, and custom patterns
+- daemon-side read/write byte-rate limiting
+- workspace boundary protection and path traversal defense
+- YAML configuration with `RCLAUDE_*` environment overrides
+- static token authentication mapped to `user_id`
+- RemotePTY attach from local `rclaude-claude` to a Server-side PTY process
+- Server-side Agent entry through `pty.binary` and `pty.args`, including `claude`, `codex`, or shell-like tools
+
+## Architecture
+
+The system has three main parts:
+
+1. `rclaude-daemon`
+2. `rclaude-server`
+3. ordinary shell, Agent, or automation running on the Server side
+
+```text
+Local workspace
+    ^
+    | read/write files and watch changes
+    v
+rclaude-daemon
+    ^
+    | bidirectional gRPC stream
+    v
+rclaude-server
+    ^
+    | FUSE mount
+    v
+/workspace/{user_id}/...
+    ^
+    | cat / sed / grep / ls / stat / mv / rm ...
+    v
+Execution environment
+```
+
+Design points:
+
+- The daemon initiates the connection to the Server, so the Server does not need to dial back into a user's local machine.
+- FUSE is the primary integration surface.
+- Server-side cache and prefetch are built into the architecture.
+- The compatibility target is ordinary path-based file semantics, not one specific model or Agent.
+
+More background, deployment, and acceptance records:
+
+- [deploy/minimal/README.md](deploy/minimal/README.md)
+- [docs/reference/claude-code-pty-adapter.md](docs/reference/claude-code-pty-adapter.md)
+- [docs/exec-plan/active/202607020936-fuse-cwd-pty-adapter/remote-linkage-report.md](docs/exec-plan/active/202607020936-fuse-cwd-pty-adapter/remote-linkage-report.md)
+- [docs/exec-plan/active/202607021406-remote-codex-smoke/plan.md](docs/exec-plan/active/202607021406-remote-codex-smoke/plan.md)
+
+## Requirements
+
+- Server side: Linux with usable FUSE support.
+- Daemon side: intended to support Linux, macOS, and Windows.
+- Go version: this repository's `go.mod` currently pins Go `1.25.2`.
+
+Notes:
+
+- Non-Linux platforms do not mount FUSE in this implementation.
+- This repository has a minimal working path, but it is not yet a full production distribution.
+- There is no built-in TLS, Docker bundle, systemd unit, installer, audit pipeline, or operations dashboard yet.
+
+## Repository Layout
+
+```text
+api/                    gRPC protocol and generated code
+app/client/             rclaude-daemon entrypoint
+app/clientpty/          rclaude-claude PTY client entrypoint
+app/server/             rclaude-server entrypoint
+pkg/config/             YAML and environment configuration loading
+pkg/auth/               token authentication
+pkg/safepath/           workspace path validation and boundary protection
+pkg/fstree/             file-tree metadata index
+pkg/session/            Server-side user sessions and request routing
+pkg/contentcache/       Server-side whole-file content cache
+pkg/fusefs/             FUSE filesystem view
+pkg/syncer/             daemon-side scan, watch, sync, and request handling
+pkg/transport/          gRPC connection and stream wrappers
+pkg/ratelimit/          daemon-side byte-rate limiting
+internal/inmemtest/     in-memory end-to-end test harness
+deploy/minimal/         minimal dual-machine deployment and smoke scripts
+tools/                  developer and smoke-test tools
+docs/                   references and phase execution records
+```
+
+## Build
+
+Install the development tools used by this repository:
+
+```bash
+make tools
+```
+
+Build the binaries:
+
+```bash
+go build -o ./bin/rclaude-server ./app/server
+go build -o ./bin/rclaude-daemon ./app/client
+go build -o ./bin/rclaude-claude ./app/clientpty
+```
+
+Or run a repository-wide build check:
+
+```bash
+go build ./...
+```
+
+## Quick Start
+
+Prepare a Server config:
+
+```yaml
+listen: ":9326"
+auth:
+  tokens:
+    "tok-alice": "alice"
+fuse:
+  mountpoint: "/workspace"
+cache:
+  max_bytes: 268435456
+prefetch:
+  enabled: true
+  max_file_bytes: 102400
+  max_files_per_dir: 16
+request_timeout: 10s
+offline_readonly_ttl: 5m
+log:
+  level: "info"
+  format: "text"
+pty:
+  binary: "claude"
+  args: []
+  workspace_root: "/workspace"
+```
+
+Prepare a daemon config:
+
+```yaml
+server:
+  address: "127.0.0.1:9326"
+  token: "tok-alice"
+workspace:
+  path: "/absolute/path/to/workspace"
+  exclude:
+    - ".git"
+    - "node_modules"
+    - "vendor"
+  sensitive_patterns:
+    - "secrets/**"
+rate_limit:
+  read_bytes_per_sec: 0
+  write_bytes_per_sec: 0
+self_write_ttl: 2s
+log:
+  level: "info"
+  format: "text"
+```
+
+Start the Server:
+
+```bash
+./bin/rclaude-server --config ./server.yaml
+```
+
+Start the daemon:
+
+```bash
+./bin/rclaude-daemon --config ./daemon.yaml
+```
+
+After startup, the Server side should expose:
+
+```text
+/workspace/alice/
+```
+
+Example file operations from the Server side:
+
+```bash
+ls -la /workspace/alice
+cat /workspace/alice/README.md
+grep -R "TODO" /workspace/alice
+mkdir /workspace/alice/tmp
+printf 'hello\n' > /workspace/alice/tmp/demo.txt
+mv /workspace/alice/tmp/demo.txt /workspace/alice/tmp/demo2.txt
+truncate -s 2 /workspace/alice/tmp/demo2.txt
+rm /workspace/alice/tmp/demo2.txt
+```
+
+## Remote PTY And Agent Entry
+
+Rclaude keeps interactive Agent support split into two paths:
+
+- File path: `rclaude-daemon` exposes the user's local workspace through `RemoteFS.Connect`; the Server publishes it through FUSE at `/workspace/{user_id}`.
+- Terminal path: `rclaude-claude` uses `RemotePTY.Attach` to forward only terminal bytes, resize events, exit status, and errors.
+
+The Server starts `pty.binary` inside `/workspace/{user_id}`. Therefore, the actual `claude` or `codex` process runs on the Server machine, not on the daemon machine. The Server OS user must be able to resolve that binary and must have the login state or environment variables required by that CLI.
+
+Example PTY config for Claude Code:
+
+```yaml
+pty:
+  binary: "claude"
+  args: []
+  workspace_root: "/workspace"
+  env_passthrough:
+    - "TERM"
+    - "LANG"
+    - "LC_ALL"
+    - "LC_CTYPE"
+    - "PATH"
+    - "HOME"
+    - "SHELL"
+    - "CLAUDE_CONFIG_DIR"
+  frame_max_bytes: 65536
+```
+
+Example PTY config for Codex:
+
+```yaml
+pty:
+  binary: "/root/.local/bin/codex"
+  args: []
+  workspace_root: "/workspace"
+```
+
+For a repeatable Codex read check, the Server can launch `codex exec` through fixed `pty.args`:
+
+```yaml
+pty:
+  binary: "/root/.local/bin/codex"
+  args:
+    - "exec"
+    - "--skip-git-repo-check"
+    - "--sandbox"
+    - "read-only"
+    - "Read README.md in the current directory and reply with the exact first line only."
+```
+
+The minimal dual-machine deployment guide is [deploy/minimal/README.md](deploy/minimal/README.md). Recommended validation order:
+
+1. Run `preflight-server.sh` on the Server machine.
+2. Run `preflight-daemon.sh` on the daemon machine.
+3. Run `smoke-remote.sh <user_id> <expected_file>` on the Server to verify the FUSE file plane.
+4. Temporarily point `pty.binary` to `/bin/sh`, then run `RCLAUDE_PTY_MODE=scripted tools/pty-smoke.sh <daemon.yaml>` to verify PTY transport and FUSE reads.
+5. Restore `pty.binary` to `claude`, `codex`, or the target CLI, then run `deploy/minimal/start-pty.sh <daemon.yaml>` for real interactive acceptance.
+
+Current observed status:
+
+- `/bin/sh` scripted PTY plus FUSE file reads pass.
+- Codex CLI TUI attach, cwd `/workspace/{user_id}`, `codex exec` reading a daemon-backed FUSE file, and remote exit code `0` propagation pass.
+- Claude Code TUI can render through RemotePTY, but main-prompt acceptance depends on Claude Code onboarding/login for the Server OS user. A Claude login on the daemon machine is not reused by the Server-side process.
+
+## Environment Overrides
+
+Configuration is loaded with `viper` and supports `RCLAUDE_*` environment overrides.
+
+Example:
+
+```bash
+export RCLAUDE_SERVER_ADDRESS=127.0.0.1:9999
+./bin/rclaude-daemon --config ./daemon.yaml
+```
+
+Dots map to underscores:
+
+- `server.address` -> `RCLAUDE_SERVER_ADDRESS`
+- `fuse.mountpoint` -> `RCLAUDE_FUSE_MOUNTPOINT`
+
+## Tests And Development Commands
+
+Standard workflow:
+
+```bash
+make fmt
+make lint
+make test
+```
+
+Other common commands:
+
+```bash
+make all
+make check
+make test-cover
+go build ./...
+```
+
+The current test baseline includes:
+
+- package-level unit tests
+- cross-platform in-memory integration tests
+- Linux real-FUSE smoke tests
+- Linux RemotePTY plus FUSE smoke compilation checks
+
+The real Linux FUSE tests exercise the path `Mount -> kernel/FUSE -> session -> daemon`. If the environment does not support FUSE, those tests skip by design.
+
+## Current Limits
+
+- The Server must run on Linux with FUSE support.
+- Authentication is currently static token mapping, not a complete identity system.
+- The current shape is better suited to small teams, roughly 1-20 users.
+- Rclaude does not mirror a complete workspace to the Server by design.
+- Disconnect handling only supports temporary read-only cache fallback, not offline write-back.
+- Production packaging such as Docker, systemd, TLS, log rotation, and operational dashboards is not included yet.
+
+## Documentation Entry Points
+
+- Minimal dual-machine deployment: [deploy/minimal/README.md](deploy/minimal/README.md)
+- Claude Code PTY adapter reference: [docs/reference/claude-code-pty-adapter.md](docs/reference/claude-code-pty-adapter.md)
+- FUSE cwd / PTY adapter linkage report: [docs/exec-plan/active/202607020936-fuse-cwd-pty-adapter/remote-linkage-report.md](docs/exec-plan/active/202607020936-fuse-cwd-pty-adapter/remote-linkage-report.md)
+- Codex smoke phase plan: [docs/exec-plan/active/202607021406-remote-codex-smoke/plan.md](docs/exec-plan/active/202607021406-remote-codex-smoke/plan.md)
+- Active phase records: [docs/exec-plan/active/](docs/exec-plan/active/)
