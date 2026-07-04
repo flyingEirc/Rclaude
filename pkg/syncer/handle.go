@@ -21,6 +21,8 @@ type HandleOptions struct {
 	SensitiveFilter *SensitiveFilter
 	ReadLimiter     *ratelimit.ByteLimiter
 	WriteLimiter    *ratelimit.ByteLimiter
+	// Auditor, when non-nil, receives one audit record per handled request.
+	Auditor Auditor
 }
 
 func Handle(ctx context.Context, req *remotefsv1.FileRequest, opts HandleOptions) *remotefsv1.FileResponse {
@@ -34,10 +36,12 @@ func Handle(ctx context.Context, req *remotefsv1.FileRequest, opts HandleOptions
 	reqID := req.GetRequestId()
 	deps := depsFromOptions(opts)
 
-	if resp := handleReadLike(ctx, reqID, req.GetOperation(), opts); resp != nil {
-		return resp
+	resp := handleReadLike(ctx, reqID, req.GetOperation(), opts)
+	if resp == nil {
+		resp = handleMutating(ctx, reqID, req.GetOperation(), opts, deps)
 	}
-	return handleMutating(ctx, reqID, req.GetOperation(), opts, deps)
+	auditRequest(opts.Auditor, req, resp)
+	return resp
 }
 
 func handleReadLike(ctx context.Context, reqID string, op any, opts HandleOptions) *remotefsv1.FileResponse {
