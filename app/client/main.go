@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"os"
 	"os/signal"
 
@@ -59,25 +58,26 @@ func runDaemon(ctx context.Context, configPath string) error {
 	if err != nil {
 		return err
 	}
+	defer func() {
+		if closeErr := logger.Close(); closeErr != nil {
+			_, _ = fmt.Fprintln(os.Stderr, closeErr)
+		}
+	}()
 	return syncer.Run(logx.WithContext(ctx, logger), syncer.RunOptions{
 		Config: cfg,
 		Logger: logger,
 	})
 }
 
-func newLogger(cfg *config.DaemonConfig) (*slog.Logger, error) {
-	level := slog.LevelInfo
-	if cfg != nil && cfg.Log.Level != "" {
-		if err := level.UnmarshalText([]byte(cfg.Log.Level)); err != nil {
-			return nil, fmt.Errorf("client: parse log level %q: %w", cfg.Log.Level, err)
-		}
-	}
-	format := logx.FormatJSON
-	if cfg != nil && cfg.Log.Format != "" {
-		format = logx.Format(cfg.Log.Format)
-	}
+// newLogger 构建写入本地日志文件的 logger；终端不输出任何日志。
+func newLogger(cfg *config.DaemonConfig) (*logx.FileLogger, error) {
 	return logx.New(logx.Options{
-		Level:  level,
-		Format: format,
-	}), nil
+		Level:      cfg.Log.Level,
+		Format:     logx.Format(cfg.Log.Format),
+		Dir:        cfg.Log.Dir,
+		Filename:   "rclaude-daemon.log",
+		MaxSizeMB:  cfg.Log.MaxSizeMB,
+		MaxBackups: cfg.Log.MaxBackups,
+		MaxAgeDays: cfg.Log.MaxAgeDays,
+	})
 }

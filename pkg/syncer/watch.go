@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"log/slog"
 	"os"
 	"path/filepath"
 
@@ -23,7 +22,7 @@ type WatchOptions struct {
 	Excludes        []string
 	SensitiveFilter *SensitiveFilter
 	Events          chan<- *remotefsv1.FileChange
-	Logger          *slog.Logger
+	Logger          logx.Logger
 	SelfWrites      *selfWriteFilter
 }
 
@@ -57,7 +56,7 @@ func Watch(ctx context.Context, opts WatchOptions) error {
 	return runWatchLoop(ctx, watcher, opts, logger)
 }
 
-func runWatchLoop(ctx context.Context, watcher *fsnotify.Watcher, opts WatchOptions, logger *slog.Logger) error {
+func runWatchLoop(ctx context.Context, watcher *fsnotify.Watcher, opts WatchOptions, logger logx.Logger) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -130,7 +129,7 @@ func handleWatchEvent(
 	watcher *fsnotify.Watcher,
 	opts WatchOptions,
 	ev fsnotify.Event,
-	logger *slog.Logger,
+	logger logx.Logger,
 ) {
 	change, watchDir := watchChangeFromEvent(opts, ev)
 	if change == nil {

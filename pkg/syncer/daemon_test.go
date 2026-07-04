@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"io"
-	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -56,11 +54,12 @@ func TestRun_InitialTreeRequestsWatchAndHeartbeat(t *testing.T) {
 	defer restore()
 
 	var logBuf bytes.Buffer
-	logger := logx.New(logx.Options{
-		Level:  slog.LevelDebug,
+	logger, logErr := logx.New(logx.Options{
+		Level:  "debug",
 		Format: logx.FormatText,
 		Output: &logBuf,
 	})
+	require.NoError(t, logErr)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -186,7 +185,7 @@ func TestRun_SensitivePathsAreFiltered(t *testing.T) {
 	go func() {
 		errCh <- Run(ctx, RunOptions{
 			Config: cfg,
-			Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+			Logger: logx.Nop(),
 			Dialer: dialer,
 		})
 	}()
@@ -278,7 +277,7 @@ func TestRun_ReadRateLimitDelaysResponse(t *testing.T) {
 	go func() {
 		errCh <- Run(ctx, RunOptions{
 			Config: cfg,
-			Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+			Logger: logx.Nop(),
 			Dialer: dialer,
 		})
 	}()
@@ -336,7 +335,7 @@ func TestRun_WriteRateLimitDelaysResponse(t *testing.T) {
 	go func() {
 		errCh <- Run(ctx, RunOptions{
 			Config: cfg,
-			Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+			Logger: logx.Nop(),
 			Dialer: dialer,
 		})
 	}()
@@ -401,7 +400,7 @@ func TestRun_CancelWhileRateLimitedReadUnblocks(t *testing.T) {
 	go func() {
 		errCh <- Run(ctx, RunOptions{
 			Config: cfg,
-			Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+			Logger: logx.Nop(),
 			Dialer: dialer,
 		})
 	}()
@@ -459,7 +458,7 @@ func TestRun_RetriesUntilStreamOpens(t *testing.T) {
 	go func() {
 		errCh <- Run(ctx, RunOptions{
 			Config: testDaemonConfig(root, "passthrough:///retry", "token"),
-			Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+			Logger: logx.Nop(),
 			Dialer: dialer,
 		})
 	}()

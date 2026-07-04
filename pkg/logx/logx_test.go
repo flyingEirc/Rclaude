@@ -4,7 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -14,162 +15,154 @@ import (
 	"flyingEirc/Rclaude/pkg/logx"
 )
 
-func TestNewJSONHandler(t *testing.T) {
-	t.Parallel()
-
-	var buf bytes.Buffer
-
-	l := logx.New(logx.Options{
-		Level: slog.LevelDebug,
-
-		Format: logx.FormatJSON,
-
-		Output: &buf,
-	})
-
-	l.Info("hello", "user", "alice", "n", 7)
-
-	var entry map[string]any
-
-	require.NoError(t, json.Unmarshal(buf.Bytes(), &entry))
-
-	assert.Equal(t, "INFO", entry["level"])
-
-	assert.Equal(t, "hello", entry["msg"])
-
-	assert.Equal(t, "alice", entry["user"])
-
-	assert.InDelta(t, 7, entry["n"], 0.0001)
+func newBufLogger(t *testing.T, opts logx.Options) (*logx.FileLogger, *bytes.Buffer) {
+	t.Helper()
+	buf := &bytes.Buffer{}
+	opts.Output = buf
+	l, err := logx.New(opts)
+	require.NoError(t, err)
+	return l, buf
 }
 
-func TestNewTextHandler(t *testing.T) {
+func TestNewJSONFormat(t *testing.T) {
 	t.Parallel()
+	l, buf := newBufLogger(t, logx.Options{Level: "debug", Format: logx.FormatJSON})
 
-	var buf bytes.Buffer
+	l.Info("hello", "user", "alice", "n", 7)
+	require.NoError(t, l.Close())
 
-	l := logx.New(logx.Options{
-		Level: slog.LevelInfo,
+	var entry map[string]any
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &entry))
+	assert.Equal(t, "info", entry["level"])
+	assert.Equal(t, "hello", entry["msg"])
+	assert.Equal(t, "alice", entry["user"])
+	assert.InDelta(t, 7, entry["n"], 0.0001)
+	assert.NotEmpty(t, entry["ts"])
+}
 
-		Format: logx.FormatText,
-
-		Output: &buf,
-	})
+func TestNewTextFormat(t *testing.T) {
+	t.Parallel()
+	l, buf := newBufLogger(t, logx.Options{Format: logx.FormatText})
 
 	l.Info("hi", "k", "v")
+	require.NoError(t, l.Close())
 
 	out := buf.String()
-
-	assert.Contains(t, out, "msg=hi")
-
-	assert.Contains(t, out, "k=v")
-
-	assert.Contains(t, out, "level=INFO")
+	assert.Contains(t, out, "hi")
+	assert.Contains(t, out, "info")
+	assert.Contains(t, out, `"k": "v"`)
 }
 
 func TestNewLevelFilter(t *testing.T) {
 	t.Parallel()
-
-	var buf bytes.Buffer
-
-	l := logx.New(logx.Options{
-		Level: slog.LevelWarn,
-
-		Format: logx.FormatJSON,
-
-		Output: &buf,
-	})
+	l, buf := newBufLogger(t, logx.Options{Level: "warn"})
 
 	l.Debug("debug-line")
-
 	l.Info("info-line")
-
 	l.Warn("warn-line")
+	l.Error("error-line")
+	require.NoError(t, l.Close())
 
 	got := buf.String()
-
 	assert.NotContains(t, got, "debug-line")
-
 	assert.NotContains(t, got, "info-line")
-
 	assert.Contains(t, got, "warn-line")
+	assert.Contains(t, got, "error-line")
+}
+
+func TestNewInvalidLevel(t *testing.T) {
+	t.Parallel()
+	_, err := logx.New(logx.Options{Level: "loud", Output: &bytes.Buffer{}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "loud")
 }
 
 func TestNewDefaultsToJSONOnUnknownFormat(t *testing.T) {
 	t.Parallel()
-
-	var buf bytes.Buffer
-
-	l := logx.New(logx.Options{
-		Format: "unknown",
-
-		Output: &buf,
-	})
+	l, buf := newBufLogger(t, logx.Options{Format: "unknown"})
 
 	l.Info("hi")
-
-	// 默认 JSON 输出可解析。
-
-	out := strings.TrimSpace(buf.String())
+	require.NoError(t, l.Close())
 
 	var entry map[string]any
-
-	require.NoError(t, json.Unmarshal([]byte(out), &entry))
-
+	require.NoError(t, json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &entry))
 	assert.Equal(t, "hi", entry["msg"])
 }
 
-func TestNewEmptyOptionsUsesStderrAndJSON(t *testing.T) {
+func TestWithAddsFields(t *testing.T) {
 	t.Parallel()
+	l, buf := newBufLogger(t, logx.Options{})
 
-	// 仅验证函数返回非 nil 且不 panic；输出指向 stderr 不便断言。
+	l.With("component", "syncer").Info("started")
+	require.NoError(t, l.Close())
 
-	l := logx.New(logx.Options{})
+	var entry map[string]any
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &entry))
+	assert.Equal(t, "syncer", entry["component"])
+}
 
-	require.NotNil(t, l)
+func TestNewWritesJSONFile(t *testing.T) {
+	t.Parallel()
+	dir := filepath.Join(t.TempDir(), "nested", "logs")
 
-	l.Info("smoke")
+	l, err := logx.New(logx.Options{
+		Dir:      dir,
+		Filename: "test.log",
+	})
+	require.NoError(t, err)
+	l.Info("to-file", "k", "v")
+	require.NoError(t, l.Close())
+
+	data, err := os.ReadFile(filepath.Join(dir, "test.log")) //nolint:gosec // test path
+	require.NoError(t, err)
+	var entry map[string]any
+	require.NoError(t, json.Unmarshal([]byte(strings.TrimSpace(string(data))), &entry))
+	assert.Equal(t, "to-file", entry["msg"])
+	assert.Equal(t, "v", entry["k"])
+}
+
+func TestDefaultDirNonEmpty(t *testing.T) {
+	t.Parallel()
+	dir := logx.DefaultDir()
+	assert.NotEmpty(t, dir)
+	assert.True(t, filepath.IsAbs(dir))
+}
+
+func TestNopSilent(t *testing.T) {
+	t.Parallel()
+	l := logx.Nop()
+	// 不 panic 即可；Nop 丢弃一切输出。
+	l.Debug("d")
+	l.Info("i", "k", "v")
+	l.Warn("w")
+	l.Error("e")
+	l.With("k", "v").Info("chained")
 }
 
 func TestContextRoundTrip(t *testing.T) {
 	t.Parallel()
-
-	var buf bytes.Buffer
-
-	l := logx.New(logx.Options{Output: &buf})
+	l, _ := newBufLogger(t, logx.Options{})
 
 	ctx := logx.WithContext(context.Background(), l)
-
 	got := logx.FromContext(ctx)
-
 	assert.Same(t, l, got)
 }
 
-func TestFromContextNilCtxFallback(t *testing.T) {
+func TestFromContextNilCtxFallsBackToNop(t *testing.T) {
 	t.Parallel()
-
 	got := logx.FromContext(nil) //nolint:staticcheck // intentional nil ctx test
-
-	assert.NotNil(t, got)
-
-	assert.Same(t, slog.Default(), got)
+	require.NotNil(t, got)
+	assert.Equal(t, logx.Nop(), got)
 }
 
-func TestFromContextMissingFallback(t *testing.T) {
+func TestFromContextMissingFallsBackToNop(t *testing.T) {
 	t.Parallel()
-
 	got := logx.FromContext(context.Background())
-
-	assert.Same(t, slog.Default(), got)
+	assert.Equal(t, logx.Nop(), got)
 }
 
 func TestWithContextNilLoggerNoop(t *testing.T) {
 	t.Parallel()
-
-	ctx := context.Background()
-
-	got := logx.WithContext(ctx, nil)
-
-	// 不变更 ctx，FromContext 仍回退到 default。
-
-	assert.Same(t, slog.Default(), logx.FromContext(got))
+	got := logx.WithContext(context.Background(), nil)
+	assert.Equal(t, logx.Nop(), logx.FromContext(got))
 }

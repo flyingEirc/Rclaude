@@ -10,9 +10,15 @@ workspace:
     - ".git"
     - "node_modules"
     - "vendor"
+# 日志只写本地文件，终端保持干净。默认目录 ~/.rclaude/logs（Windows 为
+# %USERPROFILE%\.rclaude\logs），daemon 写 rclaude-daemon.log。
 log:
   level: "info"
-  format: "text"
+  format: "json"          # json（默认）| text
+  # dir: "E:/Rclaude-logs" # 日志目录，省略时用默认目录
+  # max_size_mb: 100       # 单文件轮转大小
+  # max_backups: 3         # 保留轮转文件个数
+  # max_age_days: 7        # 轮转文件保留天数
 pty:
   frame_max_bytes: 65536
 # Optional: persist every remote file operation into a local database for auditing.

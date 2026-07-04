@@ -31,4 +31,8 @@ pty:
     stdin_burst: 262144
 log:
   level: "info"
-  format: "text"
+  format: "json"          # json（默认）| text
+  # dir: ""                # 日志目录，省略时用 ~/.rclaude/logs
+  # max_size_mb: 100       # 单文件轮转大小
+  # max_backups: 3         # 保留轮转文件个数
+  # max_age_days: 7        # 轮转文件保留天数
