@@ -5,13 +5,12 @@ usage() {
   cat >&2 <<'EOF'
 usage: deploy/minimal/preflight-daemon.sh <daemon-config-path>
 
-Checks the Daemon/client-machine prerequisites before starting rclaude-daemon or
-rclaude-claude. It does not start either process and does not modify the
+Checks the Daemon/client-machine prerequisites before starting the unified
+rclaude entry (daemon + pty). It does not start anything and does not modify the
 workspace or config.
 
 Optional environment:
-  RCLAUDE_DAEMON_BIN                 Override the local rclaude-daemon binary path.
-  RCLAUDE_PTY_BIN                    Override the local rclaude-claude binary path.
+  RCLAUDE_BIN                        Override the local rclaude binary path.
   RCLAUDE_PREFLIGHT_CHECK_SERVER=1   Require a TCP check to server.address with nc.
   RCLAUDE_PREFLIGHT_REQUIRE_TTY=1    Require stdin and stdout to be TTYs for PTY use.
 EOF
@@ -176,7 +175,7 @@ check_tty() {
   if [ -t 0 ] && [ -t 1 ]; then
     pass "stdin and stdout are TTYs"
   else
-    fail "stdin and stdout must both be TTYs for rclaude-claude"
+    fail "stdin and stdout must both be TTYs for the rclaude pty attach"
   fi
 }
 
@@ -209,16 +208,10 @@ fi
 
 check_workspace "$workspace_path"
 
-if daemon_bin=$(find_binary "RCLAUDE_DAEMON_BIN" "./bin/rclaude-daemon" "rclaude-daemon"); then
-  check_executable "rclaude-daemon" "$daemon_bin"
+if rclaude_bin=$(find_binary "RCLAUDE_BIN" "./bin/rclaude" "rclaude"); then
+  check_executable "rclaude" "$rclaude_bin"
 else
-  fail "rclaude-daemon binary not found; build ./app/client or set RCLAUDE_DAEMON_BIN"
-fi
-
-if pty_bin=$(find_binary "RCLAUDE_PTY_BIN" "./bin/rclaude-claude" "rclaude-claude"); then
-  check_executable "rclaude-claude" "$pty_bin"
-else
-  fail "rclaude-claude binary not found; build ./app/clientpty or set RCLAUDE_PTY_BIN"
+  fail "rclaude binary not found; build ./app/rclaude or set RCLAUDE_BIN"
 fi
 
 check_tty
