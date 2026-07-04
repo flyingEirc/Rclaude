@@ -30,6 +30,8 @@ const (
 	DefaultPTYStdinBurst          int64 = 256 * 1024
 	DefaultAuditTable                   = "file_audit_log"
 	DefaultAuditQueueSize               = 256
+	DefaultStartupMaxRetries            = 3
+	DefaultStartupRetryDelay            = time.Second
 )
 
 var (
@@ -47,6 +49,8 @@ var (
 	ErrAuditDriverInvalid       = errors.New("config: audit.driver must be one of sqlite/mysql/postgres")
 	ErrAuditDSNRequired         = errors.New("config: audit.dsn is required when audit.enabled is true")
 	ErrAuditTableInvalid        = errors.New("config: audit.table may only contain letters, digits and underscores")
+	ErrStartupRetriesNegative   = errors.New("config: startup.max_retries must be >= 0")
+	ErrStartupDelayNegative     = errors.New("config: startup.retry_delay must be >= 0")
 
 	auditTablePattern = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
 )
@@ -86,7 +90,16 @@ type DaemonConfig struct {
 	Log          LogConfig       `mapstructure:"log"`
 	RateLimit    RateLimitConfig `mapstructure:"rate_limit"`
 	Audit        AuditConfig     `mapstructure:"audit"`
+	Startup      StartupConfig   `mapstructure:"startup"`
 	SelfWriteTTL time.Duration   `mapstructure:"self_write_ttl"`
+}
+
+// StartupConfig 控制统一入口（rclaude）启动阶段的事件总线重试策略。
+// MaxRetries 指初始尝试之外允许的重试次数（总尝试数 = 1 + MaxRetries）；
+// RetryDelay 是收到重试通知后再次尝试前的等待时间。
+type StartupConfig struct {
+	MaxRetries int           `mapstructure:"max_retries"`
+	RetryDelay time.Duration `mapstructure:"retry_delay"`
 }
 
 // AuditConfig controls persistence of remote file-operation records into a
@@ -191,7 +204,20 @@ func (c *DaemonConfig) Validate() error {
 	if c.PTY.FrameMaxBytes <= 0 {
 		return ErrPTYFrameMaxBytesNegative
 	}
+	if err := c.validateStartup(); err != nil {
+		return err
+	}
 	return c.validateAudit()
+}
+
+func (c *DaemonConfig) validateStartup() error {
+	if c.Startup.MaxRetries < 0 {
+		return ErrStartupRetriesNegative
+	}
+	if c.Startup.RetryDelay < 0 {
+		return ErrStartupDelayNegative
+	}
+	return nil
 }
 
 func (c *DaemonConfig) validateAudit() error {
@@ -286,6 +312,10 @@ func defaultDaemonConfig() DaemonConfig {
 		Audit: AuditConfig{
 			Table:     DefaultAuditTable,
 			QueueSize: DefaultAuditQueueSize,
+		},
+		Startup: StartupConfig{
+			MaxRetries: DefaultStartupMaxRetries,
+			RetryDelay: DefaultStartupRetryDelay,
 		},
 	}
 }

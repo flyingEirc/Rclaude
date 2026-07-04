@@ -18,3 +18,9 @@ log:
 pty:
   # Keep this aligned with server.yaml if you lower the server-side frame cap.
   frame_max_bytes: 65536
+# 统一入口 `rclaude` 的启动协调策略（事件总线驱动的失败重试）。
+# max_retries：初始尝试之外允许的重试次数（默认 3）；
+# retry_delay：收到重试通知后再次尝试前的等待（默认 1s）。
+# startup:
+#   max_retries: 3
+#   retry_delay: 1s

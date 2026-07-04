@@ -30,6 +30,9 @@ type Config struct {
 	Resizes  <-chan WindowSize
 	Attach   AttachParams
 	FrameMax int
+	// OnAttached, if non-nil, runs once after the attach handshake succeeds
+	// (first server frame is Attached), before the IO pumps start.
+	OnAttached func()
 }
 
 // Client is a one-shot PTY bridge. Use New + Run; do not reuse.
@@ -90,6 +93,9 @@ func (c *Client) Run(ctx context.Context) ExitResult {
 	if first.GetAttached() == nil {
 		c.shutdownBackground(cancel, g)
 		return ExitResult{Err: ErrFirstFrameNotAttached}
+	}
+	if c.cfg.OnAttached != nil {
+		c.cfg.OnAttached()
 	}
 
 	g.Go(func() error {

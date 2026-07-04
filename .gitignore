@@ -2,3 +2,5 @@ docs
 .idea
 .list/
 .workspace/
+.test/bin/
+.test/run/

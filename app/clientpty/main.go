@@ -8,24 +8,26 @@ import (
 	"os/signal"
 
 	"github.com/spf13/cobra"
+
+	"flyingEirc/Rclaude/pkg/ptyattach"
 )
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	cmd, err := newRootCommand(defaultCommandDeps())
+	cmd, err := newRootCommand()
 	if err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 	if err := cmd.ExecuteContext(ctx); err != nil {
-		var exitErr *exitStatus
+		var exitErr *ptyattach.ExitError
 		if errors.As(err, &exitErr) {
-			if !exitErr.quiet && exitErr.message != "" {
-				_, _ = fmt.Fprintln(os.Stderr, exitErr.message)
+			if !exitErr.Quiet && exitErr.Message != "" {
+				_, _ = fmt.Fprintln(os.Stderr, exitErr.Message)
 			}
-			os.Exit(exitErr.code)
+			os.Exit(exitErr.Code)
 		}
 
 		_, _ = fmt.Fprintln(os.Stderr, err)
@@ -33,7 +35,7 @@ func main() {
 	}
 }
 
-func newRootCommand(deps commandDeps) (*cobra.Command, error) {
+func newRootCommand() (*cobra.Command, error) {
 	var configPath string
 
 	cmd := &cobra.Command{
@@ -43,7 +45,7 @@ func newRootCommand(deps commandDeps) (*cobra.Command, error) {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runCommand(cmd.Context(), deps, configPath)
+			return ptyattach.Run(cmd.Context(), ptyattach.Options{ConfigPath: configPath})
 		},
 	}
 	cmd.Flags().StringVar(&configPath, "config", "", "Path to the daemon YAML config")

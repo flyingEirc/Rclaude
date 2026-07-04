@@ -1,6 +1,6 @@
 //go:build windows
 
-package main
+package ptyattach
 
 import (
 	"context"
@@ -37,11 +37,11 @@ func (nativeTerminalController) Prepare(
 	if err != nil {
 		if restoreErr := restoreConsole(stdinFD, stdoutFD, state); restoreErr != nil {
 			return terminalSession{}, errors.Join(
-				fmt.Errorf("clientpty: query terminal size: %w", err),
-				fmt.Errorf("clientpty: restore console: %w", restoreErr),
+				fmt.Errorf("ptyattach: query terminal size: %w", err),
+				fmt.Errorf("ptyattach: restore console: %w", restoreErr),
 			)
 		}
-		return terminalSession{}, fmt.Errorf("clientpty: query terminal size: %w", err)
+		return terminalSession{}, fmt.Errorf("ptyattach: query terminal size: %w", err)
 	}
 
 	return terminalSession{
@@ -56,7 +56,7 @@ func (nativeTerminalController) Prepare(
 func enableConsoleModes(stdinFD, stdoutFD int) (*terminalState, error) {
 	var inputMode uint32
 	if err := windows.GetConsoleMode(windows.Handle(stdinFD), &inputMode); err != nil {
-		return nil, fmt.Errorf("clientpty: query stdin console mode: %w", err)
+		return nil, fmt.Errorf("ptyattach: query stdin console mode: %w", err)
 	}
 	rawInput := inputMode &^
 		(windows.ENABLE_ECHO_INPUT |
@@ -64,28 +64,28 @@ func enableConsoleModes(stdinFD, stdoutFD int) (*terminalState, error) {
 			windows.ENABLE_PROCESSED_INPUT)
 	rawInput |= windows.ENABLE_VIRTUAL_TERMINAL_INPUT
 	if err := windows.SetConsoleMode(windows.Handle(stdinFD), rawInput); err != nil {
-		return nil, fmt.Errorf("clientpty: set stdin raw mode: %w", err)
+		return nil, fmt.Errorf("ptyattach: set stdin raw mode: %w", err)
 	}
 
 	var outputMode uint32
 	if err := windows.GetConsoleMode(windows.Handle(stdoutFD), &outputMode); err != nil {
 		if restoreErr := windows.SetConsoleMode(windows.Handle(stdinFD), inputMode); restoreErr != nil {
 			return nil, errors.Join(
-				fmt.Errorf("clientpty: query stdout console mode: %w", err),
-				fmt.Errorf("clientpty: restore stdin console mode: %w", restoreErr),
+				fmt.Errorf("ptyattach: query stdout console mode: %w", err),
+				fmt.Errorf("ptyattach: restore stdin console mode: %w", restoreErr),
 			)
 		}
-		return nil, fmt.Errorf("clientpty: query stdout console mode: %w", err)
+		return nil, fmt.Errorf("ptyattach: query stdout console mode: %w", err)
 	}
 	output := outputMode | windows.ENABLE_VIRTUAL_TERMINAL_PROCESSING
 	if err := windows.SetConsoleMode(windows.Handle(stdoutFD), output); err != nil {
 		if restoreErr := windows.SetConsoleMode(windows.Handle(stdinFD), inputMode); restoreErr != nil {
 			return nil, errors.Join(
-				fmt.Errorf("clientpty: enable VT output: %w", err),
-				fmt.Errorf("clientpty: restore stdin console mode: %w", restoreErr),
+				fmt.Errorf("ptyattach: enable VT output: %w", err),
+				fmt.Errorf("ptyattach: restore stdin console mode: %w", restoreErr),
 			)
 		}
-		return nil, fmt.Errorf("clientpty: enable VT output: %w", err)
+		return nil, fmt.Errorf("ptyattach: enable VT output: %w", err)
 	}
 
 	return &terminalState{

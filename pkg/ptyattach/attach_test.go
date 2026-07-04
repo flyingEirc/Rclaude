@@ -1,4 +1,4 @@
-package main
+package ptyattach
 
 import (
 	"bytes"
@@ -227,10 +227,10 @@ func TestRunCommandMapsServerErrorToExitStatus(t *testing.T) {
 	err := runCommand(ctx, deps, "daemon.yaml")
 	require.Error(t, err)
 
-	var exitErr *exitStatus
+	var exitErr *ExitError
 	require.ErrorAs(t, err, &exitErr)
-	assert.Equal(t, 2, exitErr.code)
-	assert.Equal(t, "daemon offline", exitErr.message)
+	assert.Equal(t, 2, exitErr.Code)
+	assert.Equal(t, "daemon offline", exitErr.Message)
 }
 
 func TestRunCommandMapsRateLimitedServerErrorToExitStatus(t *testing.T) {
@@ -269,10 +269,10 @@ func TestRunCommandMapsRateLimitedServerErrorToExitStatus(t *testing.T) {
 	err := runCommand(ctx, deps, "daemon.yaml")
 	require.Error(t, err)
 
-	var exitErr *exitStatus
+	var exitErr *ExitError
 	require.ErrorAs(t, err, &exitErr)
-	assert.Equal(t, 5, exitErr.code)
-	assert.Equal(t, "stdin limited: burst exceeded", exitErr.message)
+	assert.Equal(t, 5, exitErr.Code)
+	assert.Equal(t, "stdin limited: burst exceeded", exitErr.Message)
 }
 
 func TestRunCommandMapsSpawnFailedServerErrorToActionableExitStatus(t *testing.T) {
@@ -308,13 +308,13 @@ func TestRunCommandMapsSpawnFailedServerErrorToActionableExitStatus(t *testing.T
 	err := runCommand(ctx, deps, "daemon.yaml")
 	require.Error(t, err)
 
-	var exitErr *exitStatus
+	var exitErr *ExitError
 	require.ErrorAs(t, err, &exitErr)
-	assert.Equal(t, 4, exitErr.code)
-	assert.Contains(t, exitErr.message, "failed to start remote claude process on Server")
-	assert.Contains(t, exitErr.message, `resolve pty binary "claude"`)
-	assert.Contains(t, exitErr.message, "pty.binary")
-	assert.Contains(t, exitErr.message, "Server-side Claude login")
+	assert.Equal(t, 4, exitErr.Code)
+	assert.Contains(t, exitErr.Message, "failed to start remote claude process on Server")
+	assert.Contains(t, exitErr.Message, `resolve pty binary "claude"`)
+	assert.Contains(t, exitErr.Message, "pty.binary")
+	assert.Contains(t, exitErr.Message, "Server-side Claude login")
 }
 
 func TestLoadClientConfigUsesServerToken(t *testing.T) {
