@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net"
 	"os"
 	"os/signal"
@@ -60,13 +59,18 @@ func runServer(ctx context.Context, configPath string) error {
 	if err != nil {
 		return err
 	}
+	defer func() {
+		if closeErr := logger.Close(); closeErr != nil {
+			_, _ = fmt.Fprintln(os.Stderr, closeErr)
+		}
+	}()
 	return runPreparedServer(ctx, cfg, logger, manager, service, verifier)
 }
 
 func runPreparedServer(
 	ctx context.Context,
 	cfg *config.ServerConfig,
-	logger *slog.Logger,
+	logger logx.Logger,
 	manager *session.Manager,
 	service *session.Service,
 	verifier auth.Verifier,
@@ -102,7 +106,7 @@ func runPreparedServer(
 
 func prepareRuntime(
 	configPath string,
-) (*config.ServerConfig, *slog.Logger, *session.Manager, *session.Service, auth.Verifier, error) {
+) (*config.ServerConfig, *logx.FileLogger, *session.Manager, *session.Service, auth.Verifier, error) {
 	cfg, err := config.LoadServer(configPath)
 	if err != nil {
 		return nil, nil, nil, nil, nil, err
@@ -131,7 +135,7 @@ func prepareRuntime(
 func mountWorkspace(
 	ctx context.Context,
 	cfg *config.ServerConfig,
-	logger *slog.Logger,
+	logger logx.Logger,
 	manager *session.Manager,
 ) (fusefs.Mounted, error) {
 	mounted, err := fusefs.Mount(logx.WithContext(ctx, logger), fusefs.Options{
@@ -166,7 +170,7 @@ func newGRPCServer(
 
 func serveUntilDone(
 	ctx context.Context,
-	logger *slog.Logger,
+	logger logx.Logger,
 	grpcServer *grpc.Server,
 	listener net.Listener,
 ) error {
@@ -192,24 +196,20 @@ func serveUntilDone(
 	}
 }
 
-func newLogger(cfg *config.ServerConfig) (*slog.Logger, error) {
-	level := slog.LevelInfo
-	if cfg != nil && cfg.Log.Level != "" {
-		if err := level.UnmarshalText([]byte(cfg.Log.Level)); err != nil {
-			return nil, fmt.Errorf("server: parse log level %q: %w", cfg.Log.Level, err)
-		}
-	}
-	format := logx.FormatJSON
-	if cfg != nil && cfg.Log.Format != "" {
-		format = logx.Format(cfg.Log.Format)
-	}
+// newLogger 构建写入本地日志文件的 logger；终端不输出任何日志。
+func newLogger(cfg *config.ServerConfig) (*logx.FileLogger, error) {
 	return logx.New(logx.Options{
-		Level:  level,
-		Format: format,
-	}), nil
+		Level:      cfg.Log.Level,
+		Format:     logx.Format(cfg.Log.Format),
+		Dir:        cfg.Log.Dir,
+		Filename:   "rclaude-server.log",
+		MaxSizeMB:  cfg.Log.MaxSizeMB,
+		MaxBackups: cfg.Log.MaxBackups,
+		MaxAgeDays: cfg.Log.MaxAgeDays,
+	})
 }
 
-func warnClose(logger *slog.Logger, msg string, err error, ignored error) {
+func warnClose(logger logx.Logger, msg string, err error, ignored error) {
 	if err != nil && !errors.Is(err, ignored) {
 		logger.Warn(msg, "err", err)
 	}

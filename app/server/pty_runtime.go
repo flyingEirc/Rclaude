@@ -3,17 +3,17 @@ package main
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"sync"
 
 	"flyingEirc/Rclaude/pkg/config"
+	"flyingEirc/Rclaude/pkg/logx"
 	"flyingEirc/Rclaude/pkg/ptyhost"
 	"flyingEirc/Rclaude/pkg/ptyservice"
 	"flyingEirc/Rclaude/pkg/ratelimit"
 	"flyingEirc/Rclaude/pkg/session"
 )
 
-func newPTYService(cfg *config.ServerConfig, manager *session.Manager, logger *slog.Logger) (*ptyservice.Service, error) {
+func newPTYService(cfg *config.ServerConfig, manager *session.Manager, logger logx.Logger) (*ptyservice.Service, error) {
 	if cfg == nil {
 		return nil, nil
 	}

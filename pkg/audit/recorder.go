@@ -2,9 +2,10 @@ package audit
 
 import (
 	"context"
-	"log/slog"
 	"sync"
 	"time"
+
+	"flyingEirc/Rclaude/pkg/logx"
 )
 
 const (
@@ -21,7 +22,7 @@ const (
 // never stall or fail a file operation.
 type Recorder struct {
 	store  Store
-	logger *slog.Logger
+	logger logx.Logger
 	queue  chan *Record
 	done   chan struct{}
 
@@ -30,13 +31,13 @@ type Recorder struct {
 }
 
 // NewRecorder starts the background writer. queueSize falls back to
-// DefaultQueueSize when not positive; logger falls back to slog.Default.
-func NewRecorder(store Store, queueSize int, logger *slog.Logger) *Recorder {
+// DefaultQueueSize when not positive; logger falls back to logx.Nop.
+func NewRecorder(store Store, queueSize int, logger logx.Logger) *Recorder {
 	if queueSize <= 0 {
 		queueSize = DefaultQueueSize
 	}
 	if logger == nil {
-		logger = slog.Default()
+		logger = logx.Nop()
 	}
 	r := &Recorder{
 		store:  store,

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net"
 	"time"
 
@@ -35,14 +34,14 @@ var (
 // RunOptions contains the dependencies required to run the daemon loop.
 type RunOptions struct {
 	Config *config.DaemonConfig
-	Logger *slog.Logger
+	Logger logx.Logger
 	Dialer func(context.Context, string) (net.Conn, error)
 }
 
 // runtimeDeps bundles process-lifetime dependencies shared by every
 // reconnect session.
 type runtimeDeps struct {
-	logger          *slog.Logger
+	logger          logx.Logger
 	sensitiveFilter *SensitiveFilter
 	auditor         *audit.Recorder
 }
@@ -77,7 +76,7 @@ func prepareRun(
 
 	logger := opts.Logger
 	if logger == nil {
-		logger = slog.Default()
+		logger = logx.Nop()
 	}
 	auditor, err := newAuditor(ctx, opts.Config.Audit, logger)
 	if err != nil {
@@ -94,7 +93,7 @@ func prepareRun(
 func newAuditor(
 	ctx context.Context,
 	cfg config.AuditConfig,
-	logger *slog.Logger,
+	logger logx.Logger,
 ) (*audit.Recorder, error) {
 	if !cfg.Enabled {
 		return nil, nil
@@ -111,7 +110,7 @@ func newAuditor(
 	return audit.NewRecorder(store, cfg.QueueSize, logger), nil
 }
 
-func closeAuditor(auditor *audit.Recorder, logger *slog.Logger) {
+func closeAuditor(auditor *audit.Recorder, logger logx.Logger) {
 	if auditor == nil {
 		return
 	}
@@ -163,7 +162,7 @@ func nextRetryDelay(
 	retry *backoff.ExponentialBackOff,
 	established bool,
 	err error,
-	logger *slog.Logger,
+	logger logx.Logger,
 ) (time.Duration, error) {
 	if established {
 		retry.Reset()
@@ -219,7 +218,7 @@ func runSession(
 	return true, serveStream(sessionCtx, cancel, stream, opts, deps)
 }
 
-func closeConn(conn io.Closer, logger *slog.Logger) {
+func closeConn(conn io.Closer, logger logx.Logger) {
 	if err := conn.Close(); err != nil {
 		logger.Warn("close grpc connection", "err", err)
 	}

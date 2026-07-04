@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -21,9 +20,21 @@ import (
 	remotefsv1 "flyingEirc/Rclaude/api/proto/remotefs/v1"
 	"flyingEirc/Rclaude/pkg/auth"
 	"flyingEirc/Rclaude/pkg/config"
+	"flyingEirc/Rclaude/pkg/logx"
 	"flyingEirc/Rclaude/pkg/ptyhost"
 	"flyingEirc/Rclaude/pkg/ptyservice"
 )
+
+func newTestLogger(t *testing.T, out io.Writer) logx.Logger {
+	t.Helper()
+	logger, err := logx.New(logx.Options{
+		Level:  "debug",
+		Format: logx.FormatText,
+		Output: out,
+	})
+	require.NoError(t, err)
+	return logger
+}
 
 func TestAttach_FirstFrameMustBeAttach(t *testing.T) {
 	t.Parallel()
@@ -208,7 +219,7 @@ func TestAttach_LogsSpawnFailureWithContext(t *testing.T) {
 	t.Parallel()
 
 	var logs bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	logger := newTestLogger(t, &logs)
 
 	stream := newFakeStream(auth.WithUserID(context.Background(), "alice"))
 	stream.pushClient(attachFrame())
@@ -224,8 +235,8 @@ func TestAttach_LogsSpawnFailureWithContext(t *testing.T) {
 	got := logs.String()
 	assert.Contains(t, got, "pty attach requested")
 	assert.Contains(t, got, "pty spawn failed")
-	assert.Contains(t, got, "user_id=alice")
-	assert.Contains(t, got, "binary=definitely-not-a-real-binary-zzz")
+	assert.Contains(t, got, `"user_id": "alice"`)
+	assert.Contains(t, got, `"binary": "definitely-not-a-real-binary-zzz"`)
 	assert.NotContains(t, got, "token")
 }
 
@@ -233,7 +244,7 @@ func TestAttach_HappyPathLogsLifecycle(t *testing.T) {
 	t.Parallel()
 
 	var logs bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	logger := newTestLogger(t, &logs)
 
 	stream := newFakeStream(auth.WithUserID(context.Background(), "alice"))
 	stream.pushClient(attachFrame())
@@ -256,10 +267,10 @@ func TestAttach_HappyPathLogsLifecycle(t *testing.T) {
 	assert.Contains(t, got, "pty spawn starting")
 	assert.Contains(t, got, "pty attached")
 	assert.Contains(t, got, "pty exited")
-	assert.Contains(t, got, "user_id=alice")
-	assert.Contains(t, got, "session_id=pty-1")
-	assert.Contains(t, got, "args_count=2")
-	assert.Contains(t, got, "code=0")
+	assert.Contains(t, got, `"user_id": "alice"`)
+	assert.Contains(t, got, `"session_id": "pty-1"`)
+	assert.Contains(t, got, `"args_count": 2`)
+	assert.Contains(t, got, `"code": 0`)
 	assert.NotContains(t, got, "token")
 }
 
@@ -309,7 +320,7 @@ func withBinary(binary string) serviceOption {
 	}
 }
 
-func withLogger(logger *slog.Logger) serviceOption {
+func withLogger(logger logx.Logger) serviceOption {
 	return func(cfg *ptyservice.Config) {
 		cfg.Logger = logger
 	}

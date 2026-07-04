@@ -62,9 +62,16 @@ type Workspace struct {
 	SensitivePatterns []string `mapstructure:"sensitive_patterns"`
 }
 
+// LogConfig 控制日志级别、格式与落盘位置。
+// 日志始终写入本地文件（默认 JSON），不输出到终端；
+// Dir 为空时使用 logx.DefaultDir()（~/.rclaude/logs）。
 type LogConfig struct {
-	Level  string `mapstructure:"level"`
-	Format string `mapstructure:"format"`
+	Level      string `mapstructure:"level"`
+	Format     string `mapstructure:"format"`
+	Dir        string `mapstructure:"dir"`
+	MaxSizeMB  int    `mapstructure:"max_size_mb"`
+	MaxBackups int    `mapstructure:"max_backups"`
+	MaxAgeDays int    `mapstructure:"max_age_days"`
 }
 
 type RateLimitConfig struct {

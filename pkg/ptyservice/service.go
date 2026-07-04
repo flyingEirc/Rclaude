@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 	"reflect"
 	"strings"
@@ -19,6 +18,7 @@ import (
 	remotefsv1 "flyingEirc/Rclaude/api/proto/remotefs/v1"
 	"flyingEirc/Rclaude/pkg/auth"
 	"flyingEirc/Rclaude/pkg/config"
+	"flyingEirc/Rclaude/pkg/logx"
 	"flyingEirc/Rclaude/pkg/ptyhost"
 )
 
@@ -69,7 +69,7 @@ type Config struct {
 	EnvWhitelist []string
 	FrameMax     int64
 	GracefulStop time.Duration
-	Logger       *slog.Logger
+	Logger       logx.Logger
 }
 
 type Service struct {
@@ -101,7 +101,7 @@ func New(cfg Config) (*Service, error) {
 		cfg.GracefulStop = config.DefaultPTYGracefulShutdown
 	}
 	if cfg.Logger == nil {
-		cfg.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+		cfg.Logger = logx.Nop()
 	}
 	cfg.Args = append([]string(nil), cfg.Args...)
 	return &Service{cfg: cfg}, nil

@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"io"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -15,6 +13,7 @@ import (
 
 	remotefsv1 "flyingEirc/Rclaude/api/proto/remotefs/v1"
 	"flyingEirc/Rclaude/pkg/config"
+	"flyingEirc/Rclaude/pkg/logx"
 	"flyingEirc/Rclaude/pkg/session"
 )
 
@@ -108,6 +107,6 @@ func testWorkspaceRoot() string {
 	return filepath.Join(string(filepath.Separator), "tmp", "rclaude-app-server-pty")
 }
 
-func discardLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(io.Discard, nil))
+func discardLogger() logx.Logger {
+	return logx.Nop()
 }
