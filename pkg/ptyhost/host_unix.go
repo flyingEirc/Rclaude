@@ -23,6 +23,7 @@ const defaultGracefulTimeout = 5 * time.Second
 type Host struct {
 	cmd      *exec.Cmd
 	ptmx     *os.File
+	stdout   *io.PipeReader
 	graceful time.Duration
 
 	waitDone       chan struct{}
@@ -66,13 +67,17 @@ func Spawn(req SpawnReq) (*Host, error) {
 		gracefulTimeout = defaultGracefulTimeout
 	}
 
+	pr, pw := io.Pipe()
+
 	h := &Host{
 		cmd:      cmd,
 		ptmx:     ptmx,
+		stdout:   pr,
 		graceful: gracefulTimeout,
 		waitDone: make(chan struct{}),
 	}
 
+	go h.drain(pw)
 	go h.reap()
 	return h, nil
 }
@@ -123,9 +128,11 @@ func (h *Host) Stdin() io.Writer {
 	return h.ptmx
 }
 
-// Stdout returns the PTY master as the child's merged stdout/stderr reader.
+// Stdout returns the child's merged stdout/stderr reader. Output is drained
+// from the PTY master through an internal pipe so buffered bytes are never
+// discarded by the master being closed on child exit.
 func (h *Host) Stdout() io.Reader {
-	return eofOnEIOReader{r: h.ptmx}
+	return h.stdout
 }
 
 // Resize forwards window-size changes to the PTY.
@@ -212,16 +219,23 @@ func (h *Host) signal(sig syscall.Signal, name string) error {
 
 func (h *Host) reap() {
 	defer close(h.waitDone)
-	defer func() {
-		if err := h.ptmx.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
-			return
-		}
-	}()
 
 	err := h.cmd.Wait()
 	h.waitResultOnce.Do(func() {
 		h.info, h.waitErr = classifyExit(err, h.cmd.ProcessState)
 	})
+}
+
+// drain copies PTY master output into the pipe until the child exits (the
+// master read returns EIO/closed, mapped to EOF). Owning the master close here,
+// after it has been fully drained, prevents truncating output that a reader has
+// not consumed yet when the child exits promptly.
+func (h *Host) drain(pw *io.PipeWriter) {
+	_, err := io.Copy(pw, eofOnEIOReader{r: h.ptmx})
+	if closeErr := h.ptmx.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) && err == nil {
+		err = closeErr
+	}
+	_ = pw.CloseWithError(err)
 }
 
 func classifyExit(err error, state *os.ProcessState) (ExitInfo, error) {
