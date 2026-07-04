@@ -72,9 +72,10 @@ type Coordinator struct {
 	mu     sync.Mutex
 	states map[Component]*componentState
 
-	failCh   chan Failure
-	retryChs map[Component]chan RetryRequest
-	events   chan Event
+	failCh     chan Failure
+	retryChs   map[Component]chan RetryRequest
+	events     chan Event
+	overflowCh chan Component // signals coordinate() to abort when a bus-event is dropped
 
 	cancel    context.CancelFunc
 	abortOnce sync.Once
@@ -111,6 +112,7 @@ func New(opts Options, specs ...Spec) (*Coordinator, error) {
 		failCh:      make(chan Failure, failBufferSize),
 		retryChs:    retryChs,
 		events:      make(chan Event, eventBufferSize),
+		overflowCh:  make(chan Component, 1),
 	}, nil
 }
 
@@ -164,13 +166,18 @@ func (c *Coordinator) Run(ctx context.Context) (<-chan Event, error) {
 // busHandlers returns the synchronous bus subscribers. They only forward
 // into channels: EventBus.Publish runs them while holding the bus lock, so
 // they must neither block nor publish.
+//
+// When a forwarding channel is full the handler signals overflowCh so that
+// coordinate() can abort startup rather than silently stranding a component
+// in awaitRetry() with no further signal.
 func (c *Coordinator) busHandlers() (func(Failure), func(RetryRequest)) {
 	onFailed := func(f Failure) {
 		select {
 		case c.failCh <- f:
 		default:
-			c.logger.Error("startup failure event dropped: queue full",
+			c.logger.Error("startup: failure event dropped (queue full), aborting",
 				"component", f.Component, "attempt", f.Attempt)
+			c.signalOverflow(f.Component)
 		}
 	}
 	onRetry := func(r RetryRequest) {
@@ -182,11 +189,22 @@ func (c *Coordinator) busHandlers() (func(Failure), func(RetryRequest)) {
 		select {
 		case ch <- r:
 		default:
-			c.logger.Error("startup retry event dropped: queue full",
+			c.logger.Error("startup: retry event dropped (queue full), aborting",
 				"component", r.Component, "attempt", r.Attempt)
+			c.signalOverflow(r.Component)
 		}
 	}
 	return onFailed, onRetry
+}
+
+// signalOverflow sends the affected component onto overflowCh for coordinate()
+// to pick up and abort. The send is non-blocking: if overflowCh already holds
+// a signal the first one is sufficient to trigger the abort.
+func (c *Coordinator) signalOverflow(comp Component) {
+	select {
+	case c.overflowCh <- comp:
+	default:
+	}
 }
 
 func (c *Coordinator) unsubscribe(onFailed func(Failure), onRetry func(RetryRequest)) {
@@ -200,6 +218,8 @@ func (c *Coordinator) unsubscribe(onFailed func(Failure), onRetry func(RetryRequ
 
 // coordinate reacts to failures put on the bus: a started peer drives the
 // retry, while a dead-end (no component able to drive) aborts startup.
+// It also aborts immediately if a bus-event was dropped (overflow), which
+// would otherwise strand a component in awaitRetry() indefinitely.
 func (c *Coordinator) coordinate(ctx context.Context) {
 	for {
 		select {
@@ -207,6 +227,8 @@ func (c *Coordinator) coordinate(ctx context.Context) {
 			return
 		case failure := <-c.failCh:
 			c.onFailure(failure)
+		case comp := <-c.overflowCh:
+			c.abort(comp, fmt.Errorf("startup: event queue overflow for %s; aborting to prevent hang", comp))
 		}
 	}
 }
