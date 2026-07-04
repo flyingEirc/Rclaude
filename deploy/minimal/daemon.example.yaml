@@ -1,4 +1,6 @@
-# 同一份 daemon 配置既给 `rclaude-daemon` 用，也给 `rclaude-claude` 用。
+# Daemon-machine config. 统一入口 `rclaude`（app/rclaude）读取本文件，同时拉起
+# daemon 与远端 claude PTY attach，是 daemon 侧的默认启动方式。
+# 拆分诊断时，同一份文件也可分别喂给 `rclaude-daemon` 与 `rclaude-claude`。
 server:
   address: "SERVER_IP:9326"
   token: "tok-demo"
@@ -18,3 +20,9 @@ log:
 pty:
   # Keep this aligned with server.yaml if you lower the server-side frame cap.
   frame_max_bytes: 65536
+# 统一入口 `rclaude` 的启动协调策略（事件总线驱动的失败重试）。
+# max_retries：初始尝试之外允许的重试次数（默认 3）；
+# retry_delay：收到重试通知后再次尝试前的等待（默认 1s）。
+# startup:
+#   max_retries: 3
+#   retry_delay: 1s

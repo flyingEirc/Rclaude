@@ -1,6 +1,6 @@
 //go:build darwin || dragonfly || freebsd || netbsd || openbsd
 
-package main
+package ptyattach
 
 import "golang.org/x/sys/unix"
 

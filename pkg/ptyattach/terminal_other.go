@@ -1,6 +1,6 @@
 //go:build !unix && !windows
 
-package main
+package ptyattach
 
 import (
 	"context"
@@ -20,5 +20,5 @@ func (nativeTerminalController) Prepare(context.Context, int, int) (terminalSess
 		InitialSize: ptyclient.WindowSize{},
 		Resizes:     nil,
 		Restore:     func() error { return nil },
-	}, errors.New("clientpty: terminal control is not supported on this platform")
+	}, errors.New("ptyattach: terminal control is not supported on this platform")
 }

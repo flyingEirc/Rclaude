@@ -2,16 +2,16 @@
 
 Language: 中文 | [English](README.md)
 
-`Rclaude` 是一个远程文件访问系统。它的目标不是“同步一份代码副本到云端”，而是让云端执行环境直接通过普通文件路径访问用户本地工作区。
+`Rclaude` 是一个远程文件访问系统。它的目标不是“同步一份代码副本到云端”，而是让远端执行环境通过普通文件路径访问 daemon 侧本地工作区。
 
-对执行侧来说，文件依然表现为“本地文件系统上的真实路径”；对系统来说，真正的数据来源仍然是用户本地机器上的工作区。
+对执行侧来说，文件依然表现为“本地文件系统上的真实路径”；对系统来说，真正的数据来源仍然是 daemon 侧配置的本地工作区。
 
 典型场景：
 
-- 云端 Agent / 任务执行器运行 `cat /workspace/alice/main.go`
+- 云端 Agent / 任务执行器运行 `cat /workspace/{user_id}/main.go`
 - Server 侧 FUSE 文件系统接管该路径访问
-- 请求通过 gRPC 双向流转发到 Alice 本地 daemon
-- daemon 读取 Alice 本地真实文件并返回内容
+- 请求通过 gRPC 双向流转发到该用户对应的 daemon
+- daemon 读取已配置的本地工作区并返回内容
 
 这样可以兼容现成的 `cat`、`sed`、`grep`、`ls`、`stat` 等 shell 工具，而不需要改造工具调用方式。
 
@@ -78,12 +78,7 @@ rclaude-server
 - Server 端缓存和预取是架构内的一等能力，不是附加优化
 - 执行环境的兼容目标是“普通文件路径语义”，而不是某个特定模型或 Agent
 
-更完整的背景、部署和验收记录见：
-
-- [deploy/minimal/README.md](deploy/minimal/README.md)
-- [docs/reference/claude-code-pty-adapter.md](docs/reference/claude-code-pty-adapter.md)
-- [docs/exec-plan/active/202607020936-fuse-cwd-pty-adapter/remote-linkage-report.md](docs/exec-plan/active/202607020936-fuse-cwd-pty-adapter/remote-linkage-report.md)
-- [docs/exec-plan/active/202607021406-remote-codex-smoke/plan.md](docs/exec-plan/active/202607021406-remote-codex-smoke/plan.md)
+最小双机部署与手工验收流程见 [deploy/minimal/README.md](deploy/minimal/README.md)。
 
 ## 平台与运行要求
 
@@ -103,6 +98,7 @@ rclaude-server
 ```text
 api/                    gRPC 协议与生成代码
 app/client/             rclaude-daemon 命令入口
+app/clientpty/          rclaude-claude PTY 客户端入口
 app/server/             rclaude-server 命令入口
 pkg/config/             YAML / 环境变量配置加载
 pkg/auth/               token 鉴权
@@ -115,22 +111,24 @@ pkg/syncer/             daemon 侧同步、扫描、监听、请求处理
 pkg/transport/          gRPC 连接与 stream 封装
 pkg/ratelimit/          daemon 侧字节限流
 internal/inmemtest/     in-memory 端到端测试夹具
-docs/                   参考资料与阶段执行记录
+deploy/minimal/         最小远程/本地测试闭包（配置 + 启动/preflight 脚本）
+tools/                  proto 代码生成插件版本锁定 (tools.go)
 ```
 
 ## 构建
 
-先安装本仓库约定的开发工具：
+先安装 Rclaude 仓库约定的开发工具：
 
 ```bash
 make tools
 ```
 
-编译两个主程序：
+编译主程序：
 
 ```bash
 go build -o ./bin/rclaude-server ./app/server
 go build -o ./bin/rclaude-daemon ./app/client
+go build -o ./bin/rclaude-claude ./app/clientpty
 ```
 
 也可以直接做全仓库构建检查：
@@ -149,7 +147,7 @@ go build ./...
 listen: ":9326"
 auth:
   tokens:
-    "tok-alice": "alice"
+    "example-token": "example-user"
 fuse:
   mountpoint: "/workspace"
 cache:
@@ -182,7 +180,7 @@ log:
 ```yaml
 server:
   address: "127.0.0.1:9326"
-  token: "tok-alice"
+  token: "example-token"
 workspace:
   path: "/absolute/path/to/workspace"
   exclude:
@@ -225,40 +223,28 @@ log:
 ./bin/rclaude-daemon --config ./daemon.yaml
 ```
 
-仓库根目录还内置了一组开发者本地联调配置，可直接用于反复手测：
-
-- `server-localtest.yaml`：给 Linux 开发机上的 `rclaude-server` 使用
-- `daemon-localtest.yaml`：给本地 `rclaude-daemon` / `rclaude-claude` 使用
-
-例如：
-
-```bash
-./bin/rclaude-server --config ./server-localtest.yaml
-./bin/rclaude-daemon --config ./daemon-localtest.yaml
-```
-
 启动成功后，Server 侧会出现：
 
 ```text
-/workspace/alice/
+/workspace/example-user/
 ```
 
 此时执行环境可直接读取：
 
 ```bash
-ls -la /workspace/alice
-cat /workspace/alice/README.md
-grep -R "TODO" /workspace/alice
+ls -la /workspace/example-user
+cat /workspace/example-user/README.md
+grep -R "TODO" /workspace/example-user
 ```
 
 如果走的是写操作链路，也会回写到本地真实工作区，例如：
 
 ```bash
-mkdir /workspace/alice/tmp
-printf 'hello\n' > /workspace/alice/tmp/demo.txt
-mv /workspace/alice/tmp/demo.txt /workspace/alice/tmp/demo2.txt
-truncate -s 2 /workspace/alice/tmp/demo2.txt
-rm /workspace/alice/tmp/demo2.txt
+mkdir /workspace/example-user/tmp
+printf 'hello\n' > /workspace/example-user/tmp/demo.txt
+mv /workspace/example-user/tmp/demo.txt /workspace/example-user/tmp/demo2.txt
+truncate -s 2 /workspace/example-user/tmp/demo2.txt
+rm /workspace/example-user/tmp/demo2.txt
 ```
 
 ## 环境变量覆盖
@@ -327,13 +313,11 @@ pty:
     - "Read README.md in the current directory and reply with the exact first line only."
 ```
 
-本仓库包含一组最小双机部署和验收脚本，详见 [deploy/minimal/README.md](deploy/minimal/README.md)。推荐验收顺序：
+Rclaude 仓库包含一组最小远程/本地测试闭包，详见 [deploy/minimal/README.md](deploy/minimal/README.md)。推荐顺序：
 
-1. 在 Server 侧运行 `preflight-server.sh`，确认 Linux、FUSE、mountpoint 和 `pty.binary`。
-2. 在 daemon 侧运行 `preflight-daemon.sh`，确认 Server 地址、token、本地 workspace 和客户端二进制。
-3. 在 Server 侧运行 `smoke-remote.sh <user_id> <expected_file>`，先证明 `/workspace/{user_id}` 文件面可读写。
-4. 临时把 `pty.binary` 指向 `/bin/sh`，运行 `RCLAUDE_PTY_MODE=scripted tools/pty-smoke.sh <daemon.yaml>`，证明 PTY 传输面和 FUSE 文件读取。
-5. 恢复 `pty.binary` 为 `claude`、`codex` 或目标 CLI，运行 `deploy/minimal/start-pty.sh <daemon.yaml>` 做真实交互验收。
+1. Preflight：本地运行 `preflight-daemon.sh`（Server 侧可选 `preflight-server.sh`）。
+2. 启动 Server：`deploy/minimal/start-server.sh` 交叉编译、部署并在远程启动 `rclaude-server`。
+3. 启动本地：`deploy/minimal/start-rclaude.sh` 运行统一入口（daemon + PTY attach），进入远程会话。
 
 当前实测状态：
 
@@ -343,7 +327,7 @@ pty:
 
 ## 测试与开发命令
 
-本仓库约定的标准流程：
+Rclaude 仓库约定的标准流程：
 
 ```bash
 make fmt
@@ -379,19 +363,7 @@ go build ./...
 - 断线时只支持基于缓存的临时只读降级，不支持离线写回
 - 还没有完整生产部署物，如容器化、systemd 单元、TLS 与日志轮转
 
-## 文档入口
+## 相关入口
 
+- English README: [README.md](README.md)
 - 最小双机部署：[deploy/minimal/README.md](deploy/minimal/README.md)
-- Claude Code PTY 适配参考：[docs/reference/claude-code-pty-adapter.md](docs/reference/claude-code-pty-adapter.md)
-- FUSE cwd / PTY adapter 联动报告：[docs/exec-plan/active/202607020936-fuse-cwd-pty-adapter/remote-linkage-report.md](docs/exec-plan/active/202607020936-fuse-cwd-pty-adapter/remote-linkage-report.md)
-- Codex smoke 阶段计划：[docs/exec-plan/active/202607021406-remote-codex-smoke/plan.md](docs/exec-plan/active/202607021406-remote-codex-smoke/plan.md)
-- 当前阶段执行记录：[docs/exec-plan/active/](docs/exec-plan/active/)
-
-如果你要继续开发这个项目，建议按下面顺序阅读：
-
-1. `README_ZH.md`
-2. `deploy/minimal/README.md`
-3. `docs/reference/claude-code-pty-adapter.md`
-4. 最新的 `docs/exec-plan/active/{时间}-{阶段名}/plan.md`
-5. 对应阶段的 `开发流程.md` 和 `测试错误.md`
-

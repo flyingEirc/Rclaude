@@ -36,6 +36,14 @@ type RunOptions struct {
 	Config *config.DaemonConfig
 	Logger logx.Logger
 	Dialer func(context.Context, string) (net.Conn, error)
+	// OnReady, if non-nil, is invoked exactly once when the daemon
+	// establishes its first session with the server (initial file tree sent).
+	OnReady func()
+	// StartupFailFast makes Run return the session error immediately while
+	// no session has ever been established, instead of retrying internally
+	// with backoff. After the first successful session the reconnect loop
+	// behaves as usual.
+	StartupFailFast bool
 }
 
 // runtimeDeps bundles process-lifetime dependencies shared by every
@@ -44,6 +52,7 @@ type runtimeDeps struct {
 	logger          logx.Logger
 	sensitiveFilter *SensitiveFilter
 	auditor         *audit.Recorder
+	everEstablished bool
 }
 
 // Run blocks until ctx is canceled or an unrecoverable configuration error occurs.
@@ -147,6 +156,9 @@ func runDaemonIteration(
 	if err == nil || ctx.Err() != nil {
 		return true, nil
 	}
+	if opts.StartupFailFast && !deps.everEstablished {
+		return true, err
+	}
 
 	delay, retryErr := nextRetryDelay(retry, established, err, deps.logger)
 	if retryErr != nil {
@@ -214,8 +226,22 @@ func runSession(
 	}); err != nil {
 		return false, fmt.Errorf("syncer: send initial file tree: %w", err)
 	}
+	markEstablished(opts, deps)
 
 	return true, serveStream(sessionCtx, cancel, stream, opts, deps)
+}
+
+// markEstablished records the first successful session establishment and
+// fires the OnReady callback exactly once. Only the reconnect-loop goroutine
+// touches deps.everEstablished, so no locking is needed.
+func markEstablished(opts RunOptions, deps *runtimeDeps) {
+	if deps.everEstablished {
+		return
+	}
+	deps.everEstablished = true
+	if opts.OnReady != nil {
+		opts.OnReady()
+	}
 }
 
 func closeConn(conn io.Closer, logger logx.Logger) {

@@ -1,4 +1,4 @@
-package main
+package ptyattach
 
 import (
 	"context"
@@ -23,24 +23,42 @@ import (
 const defaultTerm = "xterm-256color"
 
 var (
-	errTTYRequired      = errors.New("clientpty: stdin and stdout must both be interactive terminals")
-	errEmptyServerToken = errors.New("clientpty: daemon config must include server.token")
+	errTTYRequired      = errors.New("ptyattach: stdin and stdout must both be interactive terminals")
+	errEmptyServerToken = errors.New("ptyattach: daemon config must include server.token")
 )
 
-type exitStatus struct {
-	code    int
-	message string
-	quiet   bool
+// ExitError carries the process exit code mapped from how the remote PTY
+// session ended. Quiet suppresses printing Message before exiting.
+type ExitError struct {
+	Code    int
+	Message string
+	Quiet   bool
 }
 
-func (e *exitStatus) Error() string {
+func (e *ExitError) Error() string {
 	if e == nil {
 		return ""
 	}
-	if e.message != "" {
-		return e.message
+	if e.Message != "" {
+		return e.Message
 	}
-	return fmt.Sprintf("exit status %d", e.code)
+	return fmt.Sprintf("exit status %d", e.Code)
+}
+
+// Options configures a single attach run.
+type Options struct {
+	// ConfigPath points at the daemon YAML config (server address/token).
+	ConfigPath string
+	// OnAttached, if non-nil, runs once when the attach handshake succeeds.
+	OnAttached func()
+}
+
+// Run attaches the local terminal to the remote claude PTY session described
+// by the daemon config. Mapped session endings are returned as *ExitError.
+func Run(ctx context.Context, opts Options) error {
+	deps := defaultCommandDeps()
+	deps.onAttached = opts.OnAttached
+	return runCommand(ctx, deps, opts.ConfigPath)
 }
 
 type loadedConfig struct {
@@ -63,6 +81,7 @@ type commandDeps struct {
 	stdinFD    int
 	stdoutFD   int
 	termName   string
+	onAttached func()
 }
 
 type commandRuntime struct {
@@ -107,11 +126,12 @@ func runCommand(ctx context.Context, deps commandDeps, configPath string) (err e
 	defer closeCommandRuntime(&err, runtime)
 
 	result := ptyclient.New(ptyclient.Config{
-		Stream:   runtime.stream,
-		Stdin:    runtime.stdin,
-		Stdout:   deps.stdout,
-		Resizes:  runtime.termSession.Resizes,
-		FrameMax: runtime.frameMax,
+		Stream:     runtime.stream,
+		Stdin:      runtime.stdin,
+		Stdout:     deps.stdout,
+		Resizes:    runtime.termSession.Resizes,
+		FrameMax:   runtime.frameMax,
+		OnAttached: deps.onAttached,
 		Attach: ptyclient.AttachParams{
 			InitialSize: runtime.termSession.InitialSize,
 			Term:        commandTermName(deps.termName),
@@ -140,7 +160,7 @@ func prepareCommandRuntime(ctx context.Context, deps commandDeps, cfg loadedConf
 	})
 	if err != nil {
 		if restoreErr := termSession.Restore(); restoreErr != nil {
-			return commandRuntime{}, errors.Join(err, fmt.Errorf("clientpty: restore terminal: %w", restoreErr))
+			return commandRuntime{}, errors.Join(err, fmt.Errorf("ptyattach: restore terminal: %w", restoreErr))
 		}
 		return commandRuntime{}, err
 	}
@@ -171,7 +191,7 @@ func closeCommandRuntime(runErr *error, runtime commandRuntime) {
 		}
 	}
 	if restoreErr := runtime.termSession.Restore(); restoreErr != nil && runErr != nil && *runErr == nil {
-		*runErr = fmt.Errorf("clientpty: restore terminal: %w", restoreErr)
+		*runErr = fmt.Errorf("ptyattach: restore terminal: %w", restoreErr)
 	}
 }
 
@@ -276,36 +296,36 @@ func openRemotePTYStream(
 	client := remotefsv1.NewRemotePTYClient(conn)
 	stream, err := client.Attach(outCtx)
 	if err != nil {
-		return nil, fmt.Errorf("clientpty: attach remote pty: %w", err)
+		return nil, fmt.Errorf("ptyattach: attach remote pty: %w", err)
 	}
 	return stream, nil
 }
 
 func exitStatusFromResult(result ptyclient.ExitResult) error {
 	if result.ServerError != nil {
-		return &exitStatus{
-			code:    serverErrorExitCode(result.ServerError),
-			message: serverErrorMessage(result.ServerError),
+		return &ExitError{
+			Code:    serverErrorExitCode(result.ServerError),
+			Message: serverErrorMessage(result.ServerError),
 		}
 	}
 	if result.Err != nil {
 		if st, ok := status.FromError(result.Err); ok {
-			return &exitStatus{
-				code:    grpcStatusExitCode(st.Code()),
-				message: grpcStatusMessage(st),
+			return &ExitError{
+				Code:    grpcStatusExitCode(st.Code()),
+				Message: grpcStatusMessage(st),
 			}
 		}
 		if errors.Is(result.Err, context.Canceled) {
-			return &exitStatus{code: 130, quiet: true}
+			return &ExitError{Code: 130, Quiet: true}
 		}
 		return result.Err
 	}
 
 	if result.Signal > 0 {
-		return &exitStatus{code: 128 + int(result.Signal), quiet: true}
+		return &ExitError{Code: 128 + int(result.Signal), Quiet: true}
 	}
 	if result.Code != 0 {
-		return &exitStatus{code: int(result.Code), quiet: true}
+		return &ExitError{Code: int(result.Code), Quiet: true}
 	}
 	return nil
 }

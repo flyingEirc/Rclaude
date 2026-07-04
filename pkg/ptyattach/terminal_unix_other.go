@@ -1,6 +1,6 @@
 //go:build aix || linux || solaris || zos
 
-package main
+package ptyattach
 
 import "golang.org/x/sys/unix"
 

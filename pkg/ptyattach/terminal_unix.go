@@ -1,6 +1,6 @@
 //go:build unix
 
-package main
+package ptyattach
 
 import (
 	"context"
@@ -28,19 +28,19 @@ func (nativeTerminalController) Prepare(
 ) (terminalSession, error) {
 	state, err := makeRaw(stdinFD)
 	if err != nil {
-		return terminalSession{}, fmt.Errorf("clientpty: make terminal raw: %w", err)
+		return terminalSession{}, fmt.Errorf("ptyattach: make terminal raw: %w", err)
 	}
 
 	size, err := currentWindowSize(stdoutFD)
 	if err != nil {
 		if restoreErr := restore(stdinFD, state); restoreErr != nil {
 			return terminalSession{}, fmt.Errorf(
-				"clientpty: query terminal size: %w; restore terminal: %w",
+				"ptyattach: query terminal size: %w; restore terminal: %w",
 				err,
 				restoreErr,
 			)
 		}
-		return terminalSession{}, fmt.Errorf("clientpty: query terminal size: %w", err)
+		return terminalSession{}, fmt.Errorf("ptyattach: query terminal size: %w", err)
 	}
 
 	return terminalSession{
