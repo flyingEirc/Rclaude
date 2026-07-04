@@ -13,6 +13,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	remotefsv1 "flyingEirc/Rclaude/api/proto/remotefs/v1"
+	"flyingEirc/Rclaude/pkg/audit"
 	"flyingEirc/Rclaude/pkg/config"
 	"flyingEirc/Rclaude/pkg/logx"
 	"flyingEirc/Rclaude/pkg/ratelimit"
@@ -38,49 +39,95 @@ type RunOptions struct {
 	Dialer func(context.Context, string) (net.Conn, error)
 }
 
+// runtimeDeps bundles process-lifetime dependencies shared by every
+// reconnect session.
+type runtimeDeps struct {
+	logger          *slog.Logger
+	sensitiveFilter *SensitiveFilter
+	auditor         *audit.Recorder
+}
+
 // Run blocks until ctx is canceled or an unrecoverable configuration error occurs.
 func Run(ctx context.Context, opts RunOptions) error {
-	ctx, logger, sensitiveFilter, err := prepareRun(ctx, opts)
+	ctx, deps, err := prepareRun(ctx, opts)
 	if err != nil {
 		return err
 	}
-	return runDaemonLoop(ctx, opts, logger, sensitiveFilter)
+	defer closeAuditor(deps.auditor, deps.logger)
+	return runDaemonLoop(ctx, opts, deps)
 }
 
 func prepareRun(
 	ctx context.Context,
 	opts RunOptions,
-) (context.Context, *slog.Logger, *SensitiveFilter, error) {
+) (context.Context, *runtimeDeps, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if opts.Config == nil {
-		return nil, nil, nil, ErrNilConfig
+		return nil, nil, ErrNilConfig
 	}
 	if err := opts.Config.Validate(); err != nil {
-		return nil, nil, nil, fmt.Errorf("syncer: validate daemon config: %w", err)
+		return nil, nil, fmt.Errorf("syncer: validate daemon config: %w", err)
 	}
 	sensitiveFilter, err := NewSensitiveFilter(opts.Config.Workspace.SensitivePatterns)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 
 	logger := opts.Logger
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return logx.WithContext(ctx, logger), logger, sensitiveFilter, nil
+	auditor, err := newAuditor(ctx, opts.Config.Audit, logger)
+	if err != nil {
+		return nil, nil, err
+	}
+	deps := &runtimeDeps{
+		logger:          logger,
+		sensitiveFilter: sensitiveFilter,
+		auditor:         auditor,
+	}
+	return logx.WithContext(ctx, logger), deps, nil
+}
+
+func newAuditor(
+	ctx context.Context,
+	cfg config.AuditConfig,
+	logger *slog.Logger,
+) (*audit.Recorder, error) {
+	if !cfg.Enabled {
+		return nil, nil
+	}
+	store, err := audit.OpenSQL(ctx, audit.SQLOptions{
+		Driver: cfg.Driver,
+		DSN:    cfg.DSN,
+		Table:  cfg.Table,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("syncer: open audit store: %w", err)
+	}
+	logger.Info("file operation audit enabled", "driver", cfg.Driver, "table", cfg.Table)
+	return audit.NewRecorder(store, cfg.QueueSize, logger), nil
+}
+
+func closeAuditor(auditor *audit.Recorder, logger *slog.Logger) {
+	if auditor == nil {
+		return
+	}
+	if err := auditor.Close(); err != nil {
+		logger.Warn("close audit recorder", "err", err)
+	}
 }
 
 func runDaemonLoop(
 	ctx context.Context,
 	opts RunOptions,
-	logger *slog.Logger,
-	sensitiveFilter *SensitiveFilter,
+	deps *runtimeDeps,
 ) error {
 	retry := newReconnectBackOff()
 	for {
-		stop, err := runDaemonIteration(ctx, opts, logger, retry, sensitiveFilter)
+		stop, err := runDaemonIteration(ctx, opts, retry, deps)
 		if stop {
 			return err
 		}
@@ -90,20 +137,19 @@ func runDaemonLoop(
 func runDaemonIteration(
 	ctx context.Context,
 	opts RunOptions,
-	logger *slog.Logger,
 	retry *backoff.ExponentialBackOff,
-	sensitiveFilter *SensitiveFilter,
+	deps *runtimeDeps,
 ) (bool, error) {
 	if ctx.Err() != nil {
 		return true, nil
 	}
 
-	established, err := runSession(ctx, opts, logger, sensitiveFilter)
+	established, err := runSession(ctx, opts, deps)
 	if err == nil || ctx.Err() != nil {
 		return true, nil
 	}
 
-	delay, retryErr := nextRetryDelay(retry, established, err, logger)
+	delay, retryErr := nextRetryDelay(retry, established, err, deps.logger)
 	if retryErr != nil {
 		return true, retryErr
 	}
@@ -134,9 +180,9 @@ func nextRetryDelay(
 func runSession(
 	ctx context.Context,
 	opts RunOptions,
-	logger *slog.Logger,
-	sensitiveFilter *SensitiveFilter,
+	deps *runtimeDeps,
 ) (bool, error) {
+	logger := deps.logger
 	conn, err := transport.Dial(ctx, transport.DialOptions{
 		Address: opts.Config.Server.Address,
 		Dialer:  opts.Dialer,
@@ -157,7 +203,7 @@ func runSession(
 	tree, err := Scan(ScanOptions{
 		Root:            opts.Config.Workspace.Path,
 		Excludes:        opts.Config.Workspace.Exclude,
-		SensitiveFilter: sensitiveFilter,
+		SensitiveFilter: deps.sensitiveFilter,
 	})
 	if err != nil {
 		return false, fmt.Errorf("syncer: initial scan: %w", err)
@@ -170,7 +216,7 @@ func runSession(
 		return false, fmt.Errorf("syncer: send initial file tree: %w", err)
 	}
 
-	return true, serveStream(sessionCtx, cancel, stream, opts, logger, sensitiveFilter)
+	return true, serveStream(sessionCtx, cancel, stream, opts, deps)
 }
 
 func closeConn(conn io.Closer, logger *slog.Logger) {
@@ -184,9 +230,9 @@ func serveStream(
 	cancel context.CancelFunc,
 	stream remotefsv1.RemoteFS_ConnectClient,
 	opts RunOptions,
-	logger *slog.Logger,
-	sensitiveFilter *SensitiveFilter,
+	deps *runtimeDeps,
 ) error {
+	logger := deps.logger
 	sendQueue := make(chan *remotefsv1.DaemonMessage, daemonOutgoingBufferSize)
 	watchEvents := make(chan *remotefsv1.FileChange, daemonWatchEventBufferSize)
 	locker := newPathLocker()
@@ -195,9 +241,12 @@ func serveStream(
 		Root:            opts.Config.Workspace.Path,
 		Locker:          locker,
 		SelfWrites:      selfWrites,
-		SensitiveFilter: sensitiveFilter,
+		SensitiveFilter: deps.sensitiveFilter,
 		ReadLimiter:     ratelimit.NewBytesPerSecond(opts.Config.RateLimit.ReadBytesPerSec),
 		WriteLimiter:    ratelimit.NewBytesPerSecond(opts.Config.RateLimit.WriteBytesPerSec),
+	}
+	if deps.auditor != nil {
+		handleOpts.Auditor = deps.auditor
 	}
 
 	group, groupCtx := errgroup.WithContext(ctx)
@@ -221,7 +270,7 @@ func serveStream(
 		return Watch(ctx, WatchOptions{
 			Root:            opts.Config.Workspace.Path,
 			Excludes:        opts.Config.Workspace.Exclude,
-			SensitiveFilter: sensitiveFilter,
+			SensitiveFilter: deps.sensitiveFilter,
 			Events:          watchEvents,
 			Logger:          logger,
 			SelfWrites:      selfWrites,

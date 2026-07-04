@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -27,6 +28,8 @@ const (
 	DefaultPTYAttachBurst               = 3
 	DefaultPTYStdinBPS            int64 = 1 << 20
 	DefaultPTYStdinBurst          int64 = 256 * 1024
+	DefaultAuditTable                   = "file_audit_log"
+	DefaultAuditQueueSize               = 256
 )
 
 var (
@@ -41,6 +44,11 @@ var (
 	ErrPTYWorkspaceRootNotAbs   = errors.New("config: pty.workspace_root must be absolute")
 	ErrPTYFrameMaxBytesNegative = errors.New("config: pty.frame_max_bytes must be > 0")
 	ErrPTYRateLimitNegative     = errors.New("config: pty.ratelimit values must be >= 0")
+	ErrAuditDriverInvalid       = errors.New("config: audit.driver must be one of sqlite/mysql/postgres")
+	ErrAuditDSNRequired         = errors.New("config: audit.dsn is required when audit.enabled is true")
+	ErrAuditTableInvalid        = errors.New("config: audit.table may only contain letters, digits and underscores")
+
+	auditTablePattern = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
 )
 
 type ServerEndpoint struct {
@@ -70,7 +78,18 @@ type DaemonConfig struct {
 	PTY          DaemonPTYConfig `mapstructure:"pty"`
 	Log          LogConfig       `mapstructure:"log"`
 	RateLimit    RateLimitConfig `mapstructure:"rate_limit"`
+	Audit        AuditConfig     `mapstructure:"audit"`
 	SelfWriteTTL time.Duration   `mapstructure:"self_write_ttl"`
+}
+
+// AuditConfig controls persistence of remote file-operation records into a
+// local database for after-the-fact auditing.
+type AuditConfig struct {
+	Enabled   bool   `mapstructure:"enabled"`
+	Driver    string `mapstructure:"driver"`
+	DSN       string `mapstructure:"dsn"`
+	Table     string `mapstructure:"table"`
+	QueueSize int    `mapstructure:"queue_size"`
 }
 
 type DaemonPTYConfig struct {
@@ -165,7 +184,41 @@ func (c *DaemonConfig) Validate() error {
 	if c.PTY.FrameMaxBytes <= 0 {
 		return ErrPTYFrameMaxBytesNegative
 	}
+	return c.validateAudit()
+}
+
+func (c *DaemonConfig) validateAudit() error {
+	a := &c.Audit
+	if a.Table == "" {
+		a.Table = DefaultAuditTable
+	}
+	if a.QueueSize <= 0 {
+		a.QueueSize = DefaultAuditQueueSize
+	}
+	if !a.Enabled {
+		return nil
+	}
+	if !IsSupportedAuditDriver(a.Driver) {
+		return ErrAuditDriverInvalid
+	}
+	if strings.TrimSpace(a.DSN) == "" {
+		return ErrAuditDSNRequired
+	}
+	if !auditTablePattern.MatchString(a.Table) {
+		return ErrAuditTableInvalid
+	}
 	return nil
+}
+
+// IsSupportedAuditDriver reports whether driver names one of the audit
+// database backends understood by pkg/audit.
+func IsSupportedAuditDriver(driver string) bool {
+	switch strings.ToLower(strings.TrimSpace(driver)) {
+	case "sqlite", "sqlite3", "mysql", "postgres", "postgresql", "pgsql":
+		return true
+	default:
+		return false
+	}
 }
 
 func (c *ServerConfig) Validate() error {
@@ -222,6 +275,10 @@ func defaultDaemonConfig() DaemonConfig {
 		SelfWriteTTL: DefaultSelfWriteTTL,
 		PTY: DaemonPTYConfig{
 			FrameMaxBytes: DefaultPTYFrameMaxBytes,
+		},
+		Audit: AuditConfig{
+			Table:     DefaultAuditTable,
+			QueueSize: DefaultAuditQueueSize,
 		},
 	}
 }

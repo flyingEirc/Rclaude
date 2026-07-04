@@ -15,3 +15,13 @@ log:
   format: "text"
 pty:
   frame_max_bytes: 65536
+# Optional: persist every remote file operation into a local database for auditing.
+# driver: sqlite | mysql | postgres (aliases: sqlite3, postgresql, pgsql)
+# audit:
+#   enabled: true
+#   driver: "sqlite"
+#   dsn: "E:/Rclaude-audit/audit.db"                     # sqlite: file path
+#   # dsn: "user:pass@tcp(127.0.0.1:3306)/rclaude"       # mysql
+#   # dsn: "postgres://user:pass@127.0.0.1:5432/rclaude" # postgres
+#   table: "file_audit_log"   # optional, [A-Za-z0-9_]+ only
+#   queue_size: 256           # optional, async write queue capacity
