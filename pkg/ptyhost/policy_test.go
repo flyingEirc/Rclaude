@@ -163,6 +163,19 @@ func TestResolveBinary_RejectsEmpty(t *testing.T) {
 	assert.ErrorIs(t, err, ptyhost.ErrBinaryEmpty)
 }
 
+func TestLoginShell_ResolvesInteractiveLoginShell(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("login-shell passthrough targets unix hosts")
+	}
+
+	shell, args, err := ptyhost.LoginShell()
+	require.NoError(t, err)
+	assert.True(t, filepath.IsAbs(shell), "expected absolute shell path, got %q", shell)
+	assert.Equal(t, []string{"-l"}, args)
+}
+
 func absWorkspaceRoot() string {
 	if runtime.GOOS == "windows" {
 		return `C:\workspace`

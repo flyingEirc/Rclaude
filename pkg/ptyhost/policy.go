@@ -2,6 +2,7 @@ package ptyhost
 
 import (
 	"errors"
+	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
@@ -17,7 +18,45 @@ var (
 	ErrWorkspaceRootNotAbs = errors.New("ptyhost: workspace root must be an absolute path")
 	ErrBinaryEmpty         = errors.New("ptyhost: binary name is empty")
 	ErrBinaryNotFound      = errors.New("ptyhost: binary not found in PATH")
+	ErrShellNotFound       = errors.New("ptyhost: no interactive login shell found")
 )
+
+// LoginShell resolves the interactive login shell to spawn when no explicit PTY
+// binary is configured. It prefers $SHELL, then common shells on PATH, and
+// returns the absolute shell path together with the login-shell argv. This is
+// what makes the passthrough a working terminal the user can ls/cd in and from
+// which they can launch claude/codex, rather than a server-pinned binary.
+func LoginShell() (string, []string, error) {
+	for _, candidate := range shellCandidates() {
+		if resolved, ok := resolveExecutable(candidate); ok {
+			return resolved, []string{"-l"}, nil
+		}
+	}
+	return "", nil, ErrShellNotFound
+}
+
+func shellCandidates() []string {
+	return []string{
+		os.Getenv("SHELL"),
+		"bash",
+		"zsh",
+		"sh",
+		"/bin/bash",
+		"/bin/sh",
+	}
+}
+
+func resolveExecutable(name string) (string, bool) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", false
+	}
+	resolved, err := exec.LookPath(name)
+	if err != nil {
+		return "", false
+	}
+	return resolved, true
+}
 
 // ResolveCwd returns the absolute working directory under the workspace root
 // for the given user id, with traversal protection.

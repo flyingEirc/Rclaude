@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/asaskevich/EventBus"
 	"github.com/spf13/cobra"
@@ -21,18 +23,20 @@ import (
 	"flyingEirc/Rclaude/pkg/syncer"
 )
 
-const logFilename = "rclaude.log"
+const (
+	logFilename = "rclaude.log"
+	// shutdownGraceTimeout bounds how long a graceful shutdown may take after a
+	// termination signal before the process forces an exit.
+	shutdownGraceTimeout = 10 * time.Second
+)
 
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
-
 	cmd, err := newRootCommand()
 	if err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	if err := cmd.ExecuteContext(ctx); err != nil {
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
 		exitOnError(err)
 	}
 }
@@ -96,7 +100,64 @@ func runUnified(ctx context.Context, configPath string) error {
 		}
 	}()
 
-	return runCoordinated(logx.WithContext(ctx, logger), cfg, configPath, logger)
+	ctx, cancel := context.WithCancel(logx.WithContext(ctx, logger))
+	defer cancel()
+	stopWatch := watchShutdownSignals(logger, cancel)
+	defer stopWatch()
+
+	return runCoordinated(ctx, cfg, configPath, logger)
+}
+
+// shutdownSignals lists the signals that trigger a graceful shutdown: SIGINT
+// (Ctrl-C), SIGTERM (kill), and SIGHUP (controlling terminal/window closed).
+// Catching SIGHUP is what makes closing the whole terminal drain and stop the
+// daemon and PTY cleanly, instead of the process being killed with no cleanup
+// and no exit logs.
+func shutdownSignals() []os.Signal {
+	return []os.Signal{os.Interrupt, syscall.SIGTERM, syscall.SIGHUP}
+}
+
+// watchShutdownSignals runs a dedicated goroutine that turns termination
+// signals into an ordered, logged shutdown: the first signal cancels the run
+// context so the daemon can finish in-flight file operations and the PTY can
+// flush before both exit; a second signal, or a grace-period timeout, forces
+// an immediate exit. It returns a stop function that detaches the handler once
+// the run finishes on its own.
+func watchShutdownSignals(logger logx.Logger, cancel context.CancelFunc) func() {
+	sigCh := make(chan os.Signal, 2)
+	signal.Notify(sigCh, shutdownSignals()...)
+	done := make(chan struct{})
+
+	go func() {
+		defer signal.Stop(sigCh)
+		select {
+		case <-done:
+			return
+		case sig := <-sigCh:
+			logger.Info("shutdown signal received, draining then stopping", "signal", sig.String())
+			cancel()
+		}
+		forceExitOnSecondSignal(logger, sigCh, done)
+	}()
+
+	return func() { close(done) }
+}
+
+// forceExitOnSecondSignal waits out the graceful shutdown, forcing an exit if a
+// second signal arrives or the grace period elapses before the run finishes.
+func forceExitOnSecondSignal(logger logx.Logger, sigCh <-chan os.Signal, done <-chan struct{}) {
+	timer := time.NewTimer(shutdownGraceTimeout)
+	defer timer.Stop()
+
+	select {
+	case <-done:
+	case sig := <-sigCh:
+		logger.Warn("second shutdown signal, forcing exit", "signal", sig.String())
+		os.Exit(130)
+	case <-timer.C:
+		logger.Warn("graceful shutdown timed out, forcing exit", "timeout", shutdownGraceTimeout.String())
+		os.Exit(130)
+	}
 }
 
 func runCoordinated(
@@ -142,6 +203,10 @@ func daemonSpec(cfg *config.DaemonConfig, logger logx.Logger) startup.Spec {
 func ptySpec(configPath string) startup.Spec {
 	return startup.Spec{
 		Name: startup.ComponentPTY,
+		// The PTY can only attach once the daemon has registered with the
+		// server, so gate its first attempt on the daemon being up instead of
+		// racing it and failing the first attach with "daemon not connected".
+		DependsOn: []startup.Component{startup.ComponentDaemon},
 		Run: func(ctx context.Context, ready func()) error {
 			return ptyattach.Run(ctx, ptyattach.Options{
 				ConfigPath: configPath,

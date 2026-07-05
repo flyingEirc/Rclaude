@@ -11,6 +11,9 @@ import (
 // bus-driven retries until it starts (and then runs to completion), gives
 // up, or the context ends.
 func (c *Coordinator) runComponent(ctx context.Context, spec Spec) {
+	if !c.awaitDependencies(ctx, spec) {
+		return
+	}
 	for attempt := 1; attempt <= c.maxAttempts; attempt++ {
 		started, err := c.runAttempt(ctx, spec, attempt)
 		if started {
@@ -35,6 +38,21 @@ func (c *Coordinator) runComponent(ctx context.Context, spec Spec) {
 			return
 		}
 	}
+}
+
+// awaitDependencies blocks until every component in spec.DependsOn has reached
+// the started phase, so a dependent's first attempt never runs before its
+// dependency is up. It reports false when ctx ended first (for example a
+// dependency gave up and aborted startup).
+func (c *Coordinator) awaitDependencies(ctx context.Context, spec Spec) bool {
+	for _, dep := range spec.DependsOn {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-c.startedChs[dep]:
+		}
+	}
+	return true
 }
 
 // runAttempt runs spec.Run once. It reports started=true as soon as ready
@@ -71,9 +89,16 @@ func (c *Coordinator) runAttempt(ctx context.Context, spec Spec, attempt int) (b
 // whose failures arrived while this component was still pending.
 func (c *Coordinator) markStarted(name Component, attempt int) {
 	c.mu.Lock()
+	alreadyStarted := c.states[name].phase == phaseStarted
 	c.states[name].phase = phaseStarted
 	pending := c.pendingPeerFailuresLocked(name)
 	c.mu.Unlock()
+
+	// Release any dependents blocked in awaitDependencies. markStarted runs at
+	// most once per component, but guard the close to stay panic-safe.
+	if !alreadyStarted {
+		close(c.startedChs[name])
+	}
 
 	c.logger.Info("startup succeeded", "component", name, "attempt", attempt)
 	c.events <- Event{Component: name, Kind: KindStarted, Attempt: attempt}

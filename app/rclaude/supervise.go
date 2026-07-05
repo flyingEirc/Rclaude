@@ -70,11 +70,7 @@ func (s *supervisor) onExited(event startup.Event) {
 	if event.Component == startup.ComponentPTY {
 		s.ptyDone = true
 		s.ptyExit = event.Err
-		if event.Err != nil {
-			s.logger.Error("pty session ended", "err", event.Err)
-		} else {
-			s.logger.Info("pty session ended")
-		}
+		s.logPTYSessionEnded(event.Err)
 		s.cancel()
 		return
 	}
@@ -82,7 +78,23 @@ func (s *supervisor) onExited(event startup.Event) {
 		s.daemonFatal = true
 		s.logger.Error("daemon exited unexpectedly", "err", event.Err)
 		s.cancel()
+		return
 	}
+	// Graceful daemon stop (e.g. after a shutdown signal): record it so the
+	// user sees the daemon winding down, not just the PTY.
+	s.logger.Info("daemon stopped")
+}
+
+// logPTYSessionEnded logs the PTY exit, keeping a normal termination (clean
+// exit or a signal-driven quiet exit) at info and only surfacing real session
+// errors at error level.
+func (s *supervisor) logPTYSessionEnded(err error) {
+	var exitErr *ptyattach.ExitError
+	if err == nil || (errors.As(err, &exitErr) && exitErr.Quiet) {
+		s.logger.Info("pty session ended")
+		return
+	}
+	s.logger.Error("pty session ended", "err", err)
 }
 
 func (s *supervisor) finish() error {

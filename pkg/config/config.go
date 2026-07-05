@@ -20,18 +20,22 @@ const (
 	DefaultPrefetchEnabled              = true
 	DefaultPrefetchMaxFileBytes   int64 = 100 * 1024
 	DefaultPrefetchMaxFilesPerDir       = 16
-	DefaultPTYBinary                    = "claude"
-	DefaultPTYWorkspaceRoot             = "/workspace"
-	DefaultPTYFrameMaxBytes       int64 = 64 * 1024
-	DefaultPTYGracefulShutdown          = 5 * time.Second
-	DefaultPTYAttachQPS                 = 1
-	DefaultPTYAttachBurst               = 3
-	DefaultPTYStdinBPS            int64 = 1 << 20
-	DefaultPTYStdinBurst          int64 = 256 * 1024
-	DefaultAuditTable                   = "file_audit_log"
-	DefaultAuditQueueSize               = 256
-	DefaultStartupMaxRetries            = 3
-	DefaultStartupRetryDelay            = time.Second
+	// DefaultPTYBinary is empty on purpose: an unset pty.binary makes the
+	// server spawn the user's interactive login shell (see ptyhost.LoginShell)
+	// so the passthrough is a working terminal rather than a server-pinned
+	// tool. Set pty.binary explicitly to pin a program (e.g. claude/codex).
+	DefaultPTYBinary                 = ""
+	DefaultPTYWorkspaceRoot          = "/workspace"
+	DefaultPTYFrameMaxBytes    int64 = 64 * 1024
+	DefaultPTYGracefulShutdown       = 5 * time.Second
+	DefaultPTYAttachQPS              = 1
+	DefaultPTYAttachBurst            = 3
+	DefaultPTYStdinBPS         int64 = 1 << 20
+	DefaultPTYStdinBurst       int64 = 256 * 1024
+	DefaultAuditTable                = "file_audit_log"
+	DefaultAuditQueueSize            = 256
+	DefaultStartupMaxRetries         = 3
+	DefaultStartupRetryDelay         = time.Second
 )
 
 var (

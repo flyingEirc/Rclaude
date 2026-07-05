@@ -125,6 +125,29 @@ func TestAttach_PassesConfiguredArgsToSpawner(t *testing.T) {
 	assert.Equal(t, []string{"--model", "sonnet"}, spawner.req.Args)
 }
 
+func TestAttach_DefaultsToLoginShellWhenBinaryUnset(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("login-shell passthrough targets unix hosts")
+	}
+
+	stream := newFakeStream(auth.WithUserID(context.Background(), "alice"))
+	stream.pushClient(attachFrame())
+	stream.pushClient(&remotefsv1.ClientFrame{
+		Payload: &remotefsv1.ClientFrame_Detach{Detach: &remotefsv1.Detach{}},
+	})
+
+	spawner := &capturingSpawner{host: newFakeHost()}
+	svc := newService(t, fakeRegistry{daemonOnline: true}, withSpawner(spawner), withBinary(""))
+	require.NoError(t, svc.Attach(stream))
+
+	require.NotNil(t, spawner.req)
+	assert.True(t, filepath.IsAbs(spawner.req.Binary),
+		"login shell must resolve to an absolute path, got %q", spawner.req.Binary)
+	assert.Equal(t, []string{"-l"}, spawner.req.Args, "unset binary must spawn a login shell")
+}
+
 func TestAttach_TooLargeStdinTriggersProtocolError(t *testing.T) {
 	t.Parallel()
 

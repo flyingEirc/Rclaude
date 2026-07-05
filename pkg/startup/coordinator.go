@@ -17,6 +17,13 @@ var (
 	ErrNoSpecs = errors.New("startup: at least two components are required")
 	// ErrDuplicateComponent indicates two specs share the same name.
 	ErrDuplicateComponent = errors.New("startup: duplicate component name")
+	// ErrUnknownDependency indicates a Spec.DependsOn names a component that
+	// has no Spec.
+	ErrUnknownDependency = errors.New("startup: unknown dependency component")
+	// ErrSelfDependency indicates a Spec lists itself in DependsOn.
+	ErrSelfDependency = errors.New("startup: component depends on itself")
+	// ErrDependencyCycle indicates the DependsOn edges form a cycle.
+	ErrDependencyCycle = errors.New("startup: dependency cycle")
 	// errExitedBeforeReady marks a Run that returned nil before signaling
 	// readiness; it still counts as a failed startup attempt.
 	errExitedBeforeReady = errors.New("startup: component exited before becoming ready")
@@ -35,6 +42,12 @@ type Spec struct {
 	// soon as startup succeeded and keep running afterwards. Returning
 	// before ready was called counts as a failed startup attempt.
 	Run func(ctx context.Context, ready func()) error
+	// DependsOn lists components that must reach the started phase before this
+	// component's first attempt runs. It removes the guaranteed first-attempt
+	// failure when a component (e.g. the PTY) can only start once another
+	// (e.g. the daemon) is up. Entries are validated for unknown names,
+	// self-references, and cycles by New.
+	DependsOn []Component
 }
 
 // Options configures a Coordinator.
@@ -72,6 +85,12 @@ type Coordinator struct {
 	mu     sync.Mutex
 	states map[Component]*componentState
 
+	// deps maps a component to the set of components it depends on.
+	deps map[Component]map[Component]struct{}
+	// startedChs[name] is closed once name reaches the started phase, so
+	// dependents can gate their first attempt on it.
+	startedChs map[Component]chan struct{}
+
 	failCh     chan Failure
 	retryChs   map[Component]chan RetryRequest
 	events     chan Event
@@ -95,12 +114,19 @@ func New(opts Options, specs ...Spec) (*Coordinator, error) {
 
 	states := make(map[Component]*componentState, len(specs))
 	retryChs := make(map[Component]chan RetryRequest, len(specs))
+	startedChs := make(map[Component]chan struct{}, len(specs))
 	for _, spec := range specs {
 		if _, dup := states[spec.Name]; dup {
 			return nil, fmt.Errorf("%w: %s", ErrDuplicateComponent, spec.Name)
 		}
 		states[spec.Name] = &componentState{}
 		retryChs[spec.Name] = make(chan RetryRequest, retryBufferSize)
+		startedChs[spec.Name] = make(chan struct{})
+	}
+
+	deps, err := buildDependencies(specs, states)
+	if err != nil {
+		return nil, err
 	}
 
 	return &Coordinator{
@@ -109,11 +135,76 @@ func New(opts Options, specs ...Spec) (*Coordinator, error) {
 		logger:      opts.Logger,
 		maxAttempts: opts.MaxRetries + 1,
 		states:      states,
+		deps:        deps,
+		startedChs:  startedChs,
 		failCh:      make(chan Failure, failBufferSize),
 		retryChs:    retryChs,
 		events:      make(chan Event, eventBufferSize),
 		overflowCh:  make(chan Component, 1),
 	}, nil
+}
+
+// buildDependencies validates the DependsOn edges and returns, per component,
+// the set of components it depends on.
+func buildDependencies(
+	specs []Spec,
+	known map[Component]*componentState,
+) (map[Component]map[Component]struct{}, error) {
+	deps := make(map[Component]map[Component]struct{}, len(specs))
+	for _, spec := range specs {
+		set := make(map[Component]struct{}, len(spec.DependsOn))
+		for _, dep := range spec.DependsOn {
+			if dep == spec.Name {
+				return nil, fmt.Errorf("%w: %s", ErrSelfDependency, spec.Name)
+			}
+			if _, ok := known[dep]; !ok {
+				return nil, fmt.Errorf("%w: %s -> %s", ErrUnknownDependency, spec.Name, dep)
+			}
+			set[dep] = struct{}{}
+		}
+		deps[spec.Name] = set
+	}
+	if err := ensureAcyclic(specs, deps); err != nil {
+		return nil, err
+	}
+	return deps, nil
+}
+
+const (
+	nodeWhite = iota
+	nodeGray
+	nodeBlack
+)
+
+// ensureAcyclic rejects DependsOn graphs with a cycle, which would otherwise
+// deadlock every component on the cycle in awaitDependencies.
+func ensureAcyclic(specs []Spec, deps map[Component]map[Component]struct{}) error {
+	color := make(map[Component]int, len(specs))
+	for _, spec := range specs {
+		if color[spec.Name] != nodeWhite {
+			continue
+		}
+		if err := visitForCycle(spec.Name, deps, color); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func visitForCycle(node Component, deps map[Component]map[Component]struct{}, color map[Component]int) error {
+	color[node] = nodeGray
+	for dep := range deps[node] {
+		switch color[dep] {
+		case nodeGray:
+			return fmt.Errorf("%w: %s -> %s", ErrDependencyCycle, node, dep)
+		case nodeWhite:
+			if err := visitForCycle(dep, deps, color); err != nil {
+				return err
+			}
+		}
+	}
+	color[node] = nodeBlack
+	return nil
 }
 
 // Run subscribes the protocol handlers and launches every component. The
@@ -244,6 +335,7 @@ func (c *Coordinator) onFailure(failure Failure) {
 		state.lastFailure = failure
 	}
 	peerStarted, allDown := c.peerSummaryLocked(failure.Component)
+	hasDependent := c.hasPendingDependentLocked(failure.Component)
 	c.mu.Unlock()
 
 	switch {
@@ -251,9 +343,42 @@ func (c *Coordinator) onFailure(failure Failure) {
 		if failure.Attempt < c.maxAttempts {
 			c.publishRetry(peerStarted, failure.Component, failure.Attempt+1)
 		}
+	case hasDependent:
+		// No started peer, but a dependent is blocked waiting on this
+		// component: it can never drive our retry, so drive it ourselves until
+		// we come up (unblocking the dependent) or exhaust retries. Exhaustion
+		// is handled by runComponent -> markGaveUp -> abort.
+		if failure.Attempt < c.maxAttempts {
+			c.publishRetry(failure.Component, failure.Component, failure.Attempt+1)
+		}
 	case allDown:
 		c.abort(failure.Component, fmt.Errorf("startup: all components failed, last: %w", failure.Err))
 	}
+}
+
+// hasPendingDependentLocked reports whether any other component is still
+// pending its first attempt while depending on self, meaning it is blocked in
+// awaitDependencies and cannot drive self's retry. Callers hold c.mu.
+func (c *Coordinator) hasPendingDependentLocked(self Component) bool {
+	for name, state := range c.states {
+		if name == self || state.phase != phasePending {
+			continue
+		}
+		if c.dependsOn(name, self) {
+			return true
+		}
+	}
+	return false
+}
+
+// dependsOn reports whether component declared dependency in its DependsOn.
+func (c *Coordinator) dependsOn(component, dependency Component) bool {
+	set, ok := c.deps[component]
+	if !ok {
+		return false
+	}
+	_, ok = set[dependency]
+	return ok
 }
 
 // peerSummaryLocked reports a started peer (if any) and whether every other

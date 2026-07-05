@@ -81,10 +81,29 @@ check_mountpoint_parent() {
   fail "mountpoint does not exist and parent is not writable: $mountpoint"
 }
 
+# With pty.binary unset the server spawns the user's interactive login shell
+# ($SHELL -> bash -> zsh -> sh), so preflight must verify a shell is usable
+# instead of failing on the empty value.
+check_login_shell() {
+  for candidate in "${SHELL:-}" bash zsh sh /bin/bash /bin/sh; do
+    [ -n "$candidate" ] || continue
+    if is_abs_path "$candidate"; then
+      if [ -x "$candidate" ]; then
+        pass "pty.binary unset; login shell available: $candidate"
+        return
+      fi
+    elif resolved=$(command -v "$candidate" 2>/dev/null); then
+      pass "pty.binary unset; login shell available: $candidate -> $resolved"
+      return
+    fi
+  done
+  fail "pty.binary unset and no login shell found (\$SHELL/bash/zsh/sh)"
+}
+
 check_pty_binary() {
   binary=$1
   if [ -z "$binary" ]; then
-    fail "pty.binary is empty or missing"
+    check_login_shell
     return
   fi
 

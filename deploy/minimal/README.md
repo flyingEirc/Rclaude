@@ -13,7 +13,8 @@ installer. Fixed connection facts (remote IP, SSH key, token) come from the
 ## Topology
 
 - **Server machine** — remote Linux, mounts `/workspace/<user_id>` over FUSE and
-  starts `pty.binary` (the real `claude`) inside it. Must be Linux with
+  starts the PTY process inside it: the user's login shell by default, or
+  `pty.binary` (e.g. the real `claude`) when pinned. Must be Linux with
   `/dev/fuse`; it cannot run on macOS.
 - **Local machine** — runs `rclaude`, which starts the daemon (exposes your
   local workspace to the server) and attaches the terminal to the remote PTY.
@@ -21,10 +22,11 @@ installer. Fixed connection facts (remote IP, SSH key, token) come from the
 
 `RemotePTY.Attach` carries only terminal bytes/resize/exit between `rclaude` and
 the server PTY process. `RemoteFS.Connect` + FUSE exposes `/workspace/<user_id>`
-and redirects file ops back to your daemon workspace. The server launches
-`pty.binary` inside `/workspace/<user_id>`, so the **server** machine must have
-`claude` installed, on `PATH` (or absolute), and already logged in for the
-server OS user — a local Claude login is not reused server-side.
+and redirects file ops back to your daemon workspace. The server launches the
+PTY process inside `/workspace/<user_id>` — the login shell by default, or the
+pinned `pty.binary`. When you pin `claude`, the **server** machine must have it
+installed, on `PATH` (or absolute), and already logged in for the server OS
+user — a local Claude login is not reused server-side.
 
 ## Files
 
