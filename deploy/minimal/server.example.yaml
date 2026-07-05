@@ -5,9 +5,12 @@ auth:
 fuse:
   mountpoint: "/workspace"
 pty:
-  # Use "claude" for the real entry. For scripted transport smoke, temporarily switch to "/bin/sh".
-  binary: "claude"
-  # Optional server-side argv appended after pty.binary. The client cannot override this.
+  # Leave binary unset (default) to hand the user their interactive login shell
+  # in /workspace/<user_id>: they can ls/cd and launch claude/codex themselves.
+  # Set it only to pin a specific program, e.g. "claude", "codex", or "/bin/sh".
+  # binary: ""
+  # Optional server-side argv appended after pty.binary (ignored for the default
+  # login shell). The client cannot override this.
   args: []
   workspace_root: "/workspace"
   env_passthrough:

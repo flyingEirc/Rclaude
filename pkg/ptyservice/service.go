@@ -85,9 +85,8 @@ func New(cfg Config) (*Service, error) {
 	if cfg.Spawner == nil {
 		return nil, ErrNilSpawner
 	}
-	if strings.TrimSpace(cfg.Binary) == "" {
-		cfg.Binary = config.DefaultPTYBinary
-	}
+	// An empty cfg.Binary is intentional: prepareSpawn then defaults to the
+	// user's interactive login shell instead of a server-pinned program.
 	if cfg.Workspace == "" {
 		cfg.Workspace = config.DefaultPTYWorkspaceRoot
 	}
@@ -193,70 +192,99 @@ func (s *Service) enforceAttachLimit(stream grpcBidiStream, userID string) error
 	return nil
 }
 
+// spawnPlan is the fully resolved command the PTY host will exec.
+type spawnPlan struct {
+	binary string
+	args   []string
+	cwd    string
+	env    []string
+}
+
 func (s *Service) startHost(
 	stream grpcBidiStream,
 	userID string,
 	attach *remotefsv1.AttachReq,
 ) (Host, string, error) {
-	binary, cwd, env, err := s.prepareSpawn(userID, attach)
+	plan, err := s.prepareSpawn(userID, attach)
 	if err != nil {
 		s.cfg.Logger.Warn("pty spawn failed",
 			"user_id", userID,
-			"binary", s.cfg.Binary,
+			"binary", s.binaryLabel(),
 			"err", err,
 		)
 		return nil, "", applicationError(stream, remotefsv1.Error_KIND_SPAWN_FAILED, err.Error())
 	}
 
-	args := append([]string(nil), s.cfg.Args...)
 	s.cfg.Logger.Info("pty spawn starting",
 		"user_id", userID,
-		"binary", binary,
-		"args_count", len(args),
-		"cwd", cwd,
+		"binary", plan.binary,
+		"args_count", len(plan.args),
+		"cwd", plan.cwd,
 	)
 	host, err := s.cfg.Spawner.Spawn(ptyhost.SpawnReq{
-		Binary:          binary,
-		Args:            args,
-		Cwd:             cwd,
-		Env:             env,
+		Binary:          plan.binary,
+		Args:            plan.args,
+		Cwd:             plan.cwd,
+		Env:             plan.env,
 		InitSize:        fromProtoSize(attach.GetInitialSize()),
 		GracefulTimeout: s.cfg.GracefulStop,
 	})
 	if err != nil {
-		s.cfg.Logger.Warn("pty spawn failed",
-			"user_id", userID,
-			"binary", binary,
-			"args_count", len(args),
-			"cwd", cwd,
-			"err", err,
-		)
+		s.logSpawnFailed(userID, plan, err)
 		return nil, "", applicationError(stream, remotefsv1.Error_KIND_SPAWN_FAILED, err.Error())
 	}
 	if isNilHost(host) {
-		s.cfg.Logger.Warn("pty spawn failed",
-			"user_id", userID,
-			"binary", binary,
-			"args_count", len(args),
-			"cwd", cwd,
-			"err", ErrNilHost,
-		)
+		s.logSpawnFailed(userID, plan, ErrNilHost)
 		return nil, "", applicationError(stream, remotefsv1.Error_KIND_SPAWN_FAILED, ErrNilHost.Error())
 	}
-	return host, cwd, nil
+	return host, plan.cwd, nil
 }
 
-func (s *Service) prepareSpawn(userID string, attach *remotefsv1.AttachReq) (string, string, []string, error) {
-	binary, err := ptyhost.ResolveBinary(s.cfg.Binary)
+func (s *Service) logSpawnFailed(userID string, plan spawnPlan, err error) {
+	s.cfg.Logger.Warn("pty spawn failed",
+		"user_id", userID,
+		"binary", plan.binary,
+		"args_count", len(plan.args),
+		"cwd", plan.cwd,
+		"err", err,
+	)
+}
+
+func (s *Service) prepareSpawn(userID string, attach *remotefsv1.AttachReq) (spawnPlan, error) {
+	binary, args, err := s.resolveCommand()
 	if err != nil {
-		return "", "", nil, fmt.Errorf("resolve pty binary %q: %w", s.cfg.Binary, err)
+		return spawnPlan{}, err
 	}
 	cwd, err := ptyhost.ResolveCwd(s.cfg.Workspace, userID)
 	if err != nil {
-		return "", "", nil, err
+		return spawnPlan{}, err
 	}
 	env := ptyhost.BuildEnv(envMap(os.Environ()), s.cfg.EnvWhitelist, attach.GetTerm())
-	return binary, cwd, env, nil
+	return spawnPlan{binary: binary, args: args, cwd: cwd, env: env}, nil
+}
+
+// resolveCommand returns the binary and argv to spawn. With no configured
+// binary it defaults to the user's interactive login shell so the passthrough
+// is a working terminal (ls/cd, launch claude/codex) instead of a
+// server-pinned tool.
+func (s *Service) resolveCommand() (string, []string, error) {
+	if strings.TrimSpace(s.cfg.Binary) == "" {
+		return ptyhost.LoginShell()
+	}
+	binary, err := ptyhost.ResolveBinary(s.cfg.Binary)
+	if err != nil {
+		return "", nil, fmt.Errorf("resolve pty binary %q: %w", s.cfg.Binary, err)
+	}
+	return binary, append([]string(nil), s.cfg.Args...), nil
+}
+
+// binaryLabel names the configured program for logs, distinguishing the
+// login-shell default from an explicit binary.
+func (s *Service) binaryLabel() string {
+	if strings.TrimSpace(s.cfg.Binary) == "" {
+		return "(login shell)"
+	}
+	return s.cfg.Binary
 }
 
 func (s *Service) runAttached(stream grpcBidiStream, userID string, sessionID string, host Host) error {

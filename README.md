@@ -39,7 +39,7 @@ Implemented features include:
 - YAML configuration with `RCLAUDE_*` environment overrides
 - static token authentication mapped to `user_id`
 - RemotePTY attach from local `rclaude-claude` to a Server-side PTY process
-- Server-side Agent entry through `pty.binary` and `pty.args`, including `claude`, `codex`, or shell-like tools
+- Server-side terminal passthrough that defaults to the user's interactive login shell in `/workspace/{user_id}` (ls/cd, then launch `claude`/`codex` yourself); pin a fixed program with `pty.binary` / `pty.args` if you prefer
 
 ## Architecture
 
@@ -157,7 +157,7 @@ log:
   level: "info"
   format: "text"
 pty:
-  binary: "claude"
+  # binary unset (default): spawn the user's interactive login shell.
   args: []
   workspace_root: "/workspace"
 ```
@@ -223,9 +223,9 @@ Rclaude keeps interactive Agent support split into two paths:
 - File path: `rclaude-daemon` exposes the user's local workspace through `RemoteFS.Connect`; the Server publishes it through FUSE at `/workspace/{user_id}`.
 - Terminal path: `rclaude-claude` uses `RemotePTY.Attach` to forward only terminal bytes, resize events, exit status, and errors.
 
-The Server starts `pty.binary` inside `/workspace/{user_id}`. Therefore, the actual `claude` or `codex` process runs on the Server machine, not on the daemon machine. The Server OS user must be able to resolve that binary and must have the login state or environment variables required by that CLI.
+By default (no `pty.binary`) the Server spawns the user's interactive login shell inside `/workspace/{user_id}`, so the passthrough is a working terminal: run `ls`/`cd`, then start `claude`, `codex`, or anything else yourself. Setting `pty.binary` pins a fixed program launched in the same directory instead. Either way the process runs on the Server machine, not on the daemon machine, so the Server OS user must be able to resolve the shell/binary and have the login state or environment variables that CLI needs.
 
-Example PTY config for Claude Code:
+Example PTY config that pins Claude Code (omit `pty.binary` to get the login shell instead):
 
 ```yaml
 pty:

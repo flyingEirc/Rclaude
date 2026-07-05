@@ -344,3 +344,105 @@ func TestNewValidation(t *testing.T) {
 	_, err = startup.New(startup.Options{Bus: bus}, blockingSpec("a"), blockingSpec("a"))
 	assert.ErrorIs(t, err, startup.ErrDuplicateComponent)
 }
+
+func TestNewValidatesDependencies(t *testing.T) {
+	bus := EventBus.New()
+
+	selfDep := blockingSpec("a")
+	selfDep.DependsOn = []startup.Component{"a"}
+	_, err := startup.New(startup.Options{Bus: bus}, selfDep, blockingSpec("b"))
+	assert.ErrorIs(t, err, startup.ErrSelfDependency)
+
+	unknown := blockingSpec("a")
+	unknown.DependsOn = []startup.Component{"ghost"}
+	_, err = startup.New(startup.Options{Bus: bus}, unknown, blockingSpec("b"))
+	assert.ErrorIs(t, err, startup.ErrUnknownDependency)
+
+	depA := blockingSpec("a")
+	depA.DependsOn = []startup.Component{"b"}
+	depB := blockingSpec("b")
+	depB.DependsOn = []startup.Component{"a"}
+	_, err = startup.New(startup.Options{Bus: bus}, depA, depB)
+	assert.ErrorIs(t, err, startup.ErrDependencyCycle)
+}
+
+// TestDependencyDefersFirstAttempt asserts a dependent's first attempt only
+// runs after its dependency has started, so no spurious failure is published.
+func TestDependencyDefersFirstAttempt(t *testing.T) {
+	bus := EventBus.New()
+	obs := observeFailures(t, bus)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	release := make(chan struct{})
+	daemon := startup.Spec{
+		Name: startup.ComponentDaemon,
+		Run: func(ctx context.Context, ready func()) error {
+			<-release // hold the daemon down until the test lets it start
+			ready()
+			<-ctx.Done()
+			return nil
+		},
+	}
+
+	var ptyStartedBeforeDaemon atomic.Bool
+	var daemonReady atomic.Bool
+	pty := startup.Spec{
+		Name:      startup.ComponentPTY,
+		DependsOn: []startup.Component{startup.ComponentDaemon},
+		Run: func(ctx context.Context, ready func()) error {
+			if !daemonReady.Load() {
+				ptyStartedBeforeDaemon.Store(true)
+			}
+			ready()
+			<-ctx.Done()
+			return nil
+		},
+	}
+
+	coord := newCoordinator(t, startup.Options{Bus: bus, Logger: logx.Nop(), MaxRetries: 3}, daemon, pty)
+	events, err := coord.Run(ctx)
+	require.NoError(t, err)
+
+	// Give the PTY goroutine time to run if it were going to ignore the gate.
+	time.Sleep(50 * time.Millisecond)
+	daemonReady.Store(true)
+	close(release)
+
+	seen := map[startup.Component]bool{}
+	for len(seen) < 2 {
+		e := waitEvent(t, events, func(e startup.Event) bool { return e.Kind == startup.KindStarted })
+		seen[e.Component] = true
+	}
+	assert.False(t, ptyStartedBeforeDaemon.Load(), "pty must not attempt before daemon is ready")
+	assert.Equal(t, int32(0), obs.count.Load(), "no failure should be published on the ordered happy path")
+
+	cancel()
+	collectUntilClosed(t, events)
+}
+
+// TestDependencyFailureAbortsWithoutHang asserts that when the dependency never
+// starts, the dependent does not hang: retries are exhausted, it gives up, and
+// startup aborts.
+func TestDependencyFailureAbortsWithoutHang(t *testing.T) {
+	bus := EventBus.New()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var daemonCalls atomic.Int32
+	daemon := failNTimesSpec(startup.ComponentDaemon, 99, &daemonCalls)
+	pty := blockingSpec(startup.ComponentPTY)
+	pty.DependsOn = []startup.Component{startup.ComponentDaemon}
+
+	coord := newCoordinator(t, startup.Options{Bus: bus, Logger: logx.Nop(), MaxRetries: 2}, daemon, pty)
+	events, err := coord.Run(ctx)
+	require.NoError(t, err)
+
+	all := collectUntilClosed(t, events)
+	assert.Equal(t, 1, kindCount(all, startup.KindGaveUp), "daemon self-retries then gives up")
+	assert.Equal(t, 1, kindCount(all, startup.KindAborted))
+	assert.Equal(t, 0, kindCount(all, startup.KindStarted), "pty never starts without its dependency")
+	assert.Equal(t, int32(3), daemonCalls.Load(), "initial attempt + 2 self-driven retries")
+}

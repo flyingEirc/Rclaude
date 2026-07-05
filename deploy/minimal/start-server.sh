@@ -41,6 +41,23 @@ chmod 600 "$SSH_KEY" 2>/dev/null || true
 SSH="ssh -i $SSH_KEY -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
 SCP="scp -i $SSH_KEY -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
 
+# Retry short-lived ssh/scp ops: the link to the test host occasionally drops a
+# transfer mid-way. scp has no resume, so re-run the whole op up to 3 times.
+retry_net() {
+  attempt=1
+  while true; do
+    if "$@"; then
+      return 0
+    fi
+    if [ "$attempt" -ge 3 ]; then
+      return 1
+    fi
+    echo "  network op failed; retry $attempt/2 in 3s..." >&2
+    attempt=$((attempt + 1))
+    sleep 3
+  done
+}
+
 # 1. Cross-compile the latest server for the remote (Ubuntu 22.04 x86_64).
 build_dir="$(mktemp -d)"
 trap 'rm -rf "$build_dir"' EXIT
@@ -51,21 +68,25 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$server_bin" ./app/server
 # 2. Ship the fresh binary + config to the remote /etc/rclaude.
 config_name="$(basename "$config_path")"
 echo "==> shipping rclaude-server + $config_name to $SSH_HOST:$REMOTE_DIR"
-$SSH "$SSH_HOST" "mkdir -p '$REMOTE_DIR'"
-$SCP "$server_bin" "$SSH_HOST:$REMOTE_DIR/rclaude-server"
-$SCP "$config_path" "$SSH_HOST:$REMOTE_DIR/$config_name"
+retry_net $SSH "$SSH_HOST" "mkdir -p '$REMOTE_DIR'"
+# Upload to a .new path: the live rclaude-server may still hold the real path,
+# and overwriting a running executable fails with ETXTBSY. We swap it in below.
+retry_net $SCP "$server_bin" "$SSH_HOST:$REMOTE_DIR/rclaude-server.new"
+retry_net $SCP "$config_path" "$SSH_HOST:$REMOTE_DIR/$config_name"
 
 # 3. (Re)start rclaude-server on the remote, detached, then confirm it is up.
 echo "==> (re)starting rclaude-server on $SSH_HOST"
 $SSH "$SSH_HOST" "sh -s" <<REMOTE
 set -eu
 cd '$REMOTE_DIR'
-chmod +x rclaude-server
+chmod +x rclaude-server.new
 mkdir -p '$REMOTE_MOUNT'
-# Free a previous instance and any stale FUSE mount before restarting.
+# Stop the previous instance (which holds the running binary) and clear a stale
+# mount, then swap the freshly uploaded binary in by rename (avoids ETXTBSY).
 pkill -x rclaude-server 2>/dev/null || true
 fusermount -u '$REMOTE_MOUNT' 2>/dev/null || umount '$REMOTE_MOUNT' 2>/dev/null || true
 sleep 1
+mv -f rclaude-server.new rclaude-server
 setsid nohup ./rclaude-server --config '$REMOTE_DIR/$config_name' >'$REMOTE_DIR/server.out' 2>&1 </dev/null &
 sleep 2
 if pgrep -x rclaude-server >/dev/null 2>&1; then

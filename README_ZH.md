@@ -39,7 +39,7 @@ Language: 中文 | [English](README.md)
 - 配置加载与环境变量覆盖：基于 YAML + `RCLAUDE_*` 环境变量
 - 静态 token 鉴权：token 映射到 `user_id`
 - 远程 PTY：本地 `rclaude-claude` 可 attach 到 Server 侧 PTY 进程
-- Server 侧 Agent 入口：通过 `pty.binary` / `pty.args` 启动 `claude`、`codex` 或 shell 类工具
+- Server 侧终端透传：默认在 `/workspace/{user_id}` 启动用户的交互式登录 shell（可 ls/cd，再自行启动 `claude`/`codex`）；也可用 `pty.binary` / `pty.args` 固定某个程序
 
 ## 架构概览
 
@@ -270,9 +270,9 @@ Rclaude 的交互 Agent 适配保持两条链路分离：
 - 文件链路：`rclaude-daemon` 通过 `RemoteFS.Connect` 把本地 workspace 暴露给 Server，Server 再通过 FUSE 提供 `/workspace/{user_id}`。
 - 终端链路：`rclaude-claude` 通过 `RemotePTY.Attach` 只转发终端字节流、窗口尺寸、退出码和错误帧。
 
-Server 会在 `/workspace/{user_id}` 中启动 `pty.binary`。这意味着真正运行 `claude` 或 `codex` 的机器是 Server，不是 daemon 所在机器；Server OS user 必须能找到对应二进制，并具备该 CLI 所需的登录态或环境变量。
+默认（不配置 `pty.binary`）时，Server 会在 `/workspace/{user_id}` 中启动用户的交互式登录 shell，透传出来的就是一个可用终端：先 `ls`/`cd`，再自行启动 `claude`、`codex` 等工具。配置了 `pty.binary` 则改为在同一目录直接启动该固定程序。无论哪种方式，进程都运行在 Server，而不是 daemon 所在机器；Server OS user 必须能找到对应 shell/二进制，并具备该 CLI 所需的登录态或环境变量。
 
-Server 配置示例：
+Server 配置示例（固定 Claude Code；省略 `pty.binary` 即为登录 shell）：
 
 ```yaml
 pty:

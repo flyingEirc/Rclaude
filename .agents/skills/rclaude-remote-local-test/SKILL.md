@@ -50,7 +50,7 @@ The concrete test configs are the gitignored `deploy/minimal/server.test.yaml` a
 - `server.test.yaml`: `listen: ":7969"`, `auth.tokens: { <token>: <userid> }`, FUSE `mountpoint: /workspace`, `pty.workspace_root: /workspace`.
 - `daemon.test.yaml`: `server.address: "69.63.208.133:7969"`, same token, absolute local `workspace.path`.
 
-For a transport-only check, temporarily set server-side `pty.binary` to `/bin/sh`; restore it to `claude` (or an absolute path) for the real entry.
+Leave server-side `pty.binary` unset (default): the attach lands in the user's login shell under `/workspace/<userid>`, where you `ls`/`cd` and launch `claude`/`codex` manually. Set `pty.binary` only to pin a fixed program (e.g. an absolute `codex` path) for scripted, non-interactive checks.
 
 ## Verification Order
 
@@ -60,7 +60,7 @@ The test is considered passing when **both the remote server and the local entry
 2. **Start server** — `sh deploy/minimal/start-server.sh deploy/minimal/server.test.yaml`. It cross-compiles `app/server` for linux/amd64, ships it + the config to `<remote>:/etc/rclaude`, restarts `rclaude-server` detached, and must print `remote: rclaude-server running (pid …)`.
 3. **Start local** — `sh deploy/minimal/start-rclaude.sh deploy/minimal/daemon.test.yaml` from an interactive TTY. Success = `daemon started` + `pty started` and a live remote PTY session.
 
-If step 2 fails, read the tailed `<remote>:/etc/rclaude/server.out`: usually a busy `/dev/fuse`, a stale `/workspace` mount, or a missing mountpoint. If step 3 fails, the server is unreachable, the token maps to the wrong `userid`, or the server-side `pty.binary` is missing; diagnostics beyond startup live in `rclaude.log`.
+If step 2 fails, read the tailed `<remote>:/etc/rclaude/server.out`: usually a busy `/dev/fuse`, a stale `/workspace` mount, or a missing mountpoint. If step 3 fails, the server is unreachable, the token maps to the wrong `userid`, or a pinned `pty.binary` is missing on the server (the default login shell only fails if the box has no shell at all); diagnostics beyond startup live in `rclaude.log`.
 
 ## Useful Project References
 
