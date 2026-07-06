@@ -1,1 +1,1 @@
-E:/Rclaude/AGENTS.md
+AGENTS.md
