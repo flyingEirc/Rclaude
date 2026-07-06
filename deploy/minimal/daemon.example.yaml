@@ -4,6 +4,18 @@
 server:
   address: "SERVER_IP:9326"
   token: "tok-demo"
+  # Optional TLS to a Caddy (or other) TLS terminator in front of the server.
+  # Omit or set enabled=false to keep plaintext gRPC (default, unchanged).
+  # See docs/design/caddy-tls-termination.md and deploy/tls/.
+  # tls:
+  #   enabled: true
+  #   # address above should then be the TLS endpoint, e.g. "rclaude.example.com:443".
+  #   server_name: ""          # SNI/cert name; defaults to address host. Set it
+  #                            # explicitly when address is a raw IP but the cert
+  #                            # is issued for a domain.
+  #   ca_file: ""              # PEM root CA for Caddy's internal CA / self-signed.
+  #                            # Leave empty for publicly-trusted certs (system roots).
+  #   insecure_skip_verify: false  # diagnostics only; never in production.
 workspace:
   path: "/absolute/path/to/workspace"
   exclude:
