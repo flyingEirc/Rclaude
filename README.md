@@ -162,50 +162,50 @@ go build ./...
 Prepare a Server config:
 
 ```yaml
-listen: ":9326"
+listen: ":9326"                      # gRPC listen address; ":port" binds all interfaces. Required.
 auth:
   tokens:
-    "example-token": "example-user"
+    "example-token": "example-user"  # token -> user_id mapping; a daemon trades its token for a user_id. At least one entry required.
 fuse:
-  mountpoint: "/workspace"
+  mountpoint: "/workspace"           # FUSE mount root, must be an absolute path; each user is mounted at {mountpoint}/{user_id}.
 cache:
-  max_bytes: 268435456
+  max_bytes: 268435456               # Server-side whole-file content cache cap in bytes; <=0 disables the cache.
 prefetch:
-  enabled: true
-  max_file_bytes: 102400
-  max_files_per_dir: 16
-request_timeout: 10s
-offline_readonly_ttl: 5m
+  enabled: true                      # Whether to prefetch small files after a directory read (needs cache.max_bytes > 0, otherwise skipped automatically).
+  max_file_bytes: 102400             # Max single-file size in bytes eligible for prefetch; larger files are skipped.
+  max_files_per_dir: 16              # Max number of files prefetched per directory read.
+request_timeout: 10s                # Per-request timeout (Lookup/Getattr/Read/Write, etc.); <=0 falls back to the 10s default.
+offline_readonly_ttl: 5m            # How long cached content stays read-only accessible after the daemon disconnects.
 log:
-  level: "info"
-  format: "text"
+  level: "info"                      # Log level: debug | info | warn | error
+  format: "text"                     # Log format: json (default) | text
 pty:
   # binary unset (default): spawn the user's interactive login shell.
-  args: []
-  workspace_root: "/workspace"
+  args: []                           # Args passed to binary.
+  workspace_root: "/workspace"       # PTY working-directory root, must be absolute; should match fuse.mountpoint. Actual cwd is {workspace_root}/{user_id}.
 ```
 
 Prepare a daemon config:
 
 ```yaml
 server:
-  address: "127.0.0.1:9326"
-  token: "example-token"
+  address: "127.0.0.1:9326"           # Server gRPC address. Required.
+  token: "example-token"              # Must match one of the tokens in the Server's auth.tokens.
 workspace:
-  path: "/absolute/path/to/workspace"
-  exclude:
+  path: "/absolute/path/to/workspace" # Local workspace root, must be an absolute path.
+  exclude:                            # Glob patterns excluded from scanning/watching.
     - ".git"
     - "node_modules"
     - "vendor"
-  sensitive_patterns:
+  sensitive_patterns:                 # Extra sensitive-path patterns on top of the built-in rules (.env, private keys, certs, etc.).
     - "secrets/**"
 rate_limit:
-  read_bytes_per_sec: 0
-  write_bytes_per_sec: 0
-self_write_ttl: 2s
+  read_bytes_per_sec: 0               # Byte-rate cap on content the daemon returns for reads; <=0 means unlimited.
+  write_bytes_per_sec: 0              # Byte-rate cap on writes the daemon flushes to disk; <=0 means unlimited.
+self_write_ttl: 2s                    # Window during which the daemon ignores its own write-triggered filesystem events, to avoid a feedback loop; <=0 falls back to the 2s default.
 log:
-  level: "info"
-  format: "text"
+  level: "info"                       # Log level: debug | info | warn | error
+  format: "text"                      # Log format: json (default) | text
 ```
 
 Start the Server:
@@ -252,10 +252,10 @@ Example PTY config that pins Claude Code (omit `pty.binary` to get the login she
 
 ```yaml
 pty:
-  binary: "claude"
-  args: []
-  workspace_root: "/workspace"
-  env_passthrough:
+  binary: "claude"                    # Fixed executable name/path to launch; leave unset (default) to spawn the login shell instead.
+  args: []                            # Args passed to binary.
+  workspace_root: "/workspace"        # PTY working-directory root, must be absolute; should match fuse.mountpoint. Actual cwd is {workspace_root}/{user_id}.
+  env_passthrough:                    # Whitelist of env vars forwarded from the Server process into the PTY child; this list is also the built-in default.
     - "TERM"
     - "LANG"
     - "LC_ALL"
@@ -264,24 +264,24 @@ pty:
     - "HOME"
     - "SHELL"
     - "CLAUDE_CONFIG_DIR"
-  frame_max_bytes: 65536
+  frame_max_bytes: 65536              # Max bytes per PTY frame, must be > 0; defaults to 65536 (64 KiB).
 ```
 
 Example PTY config for Codex:
 
 ```yaml
 pty:
-  binary: "/root/.local/bin/codex"
-  args: []
-  workspace_root: "/workspace"
+  binary: "/root/.local/bin/codex"    # Fixed executable path (must resolve on the Server machine).
+  args: []                            # Args passed to binary.
+  workspace_root: "/workspace"        # PTY working-directory root, must be absolute.
 ```
 
 For a repeatable Codex read check, the Server can launch `codex exec` through fixed `pty.args`:
 
 ```yaml
 pty:
-  binary: "/root/.local/bin/codex"
-  args:
+  binary: "/root/.local/bin/codex"    # Fixed executable path.
+  args:                                # Args passed to binary; here it pins every attach to one read-only codex exec run.
     - "exec"
     - "--skip-git-repo-check"
     - "--sandbox"
@@ -310,10 +310,10 @@ this on both sides:
 
 ```yaml
 log:
-  level: "info"
+  level: "info"         # Log level: debug | info | warn | error
   format: "json"        # json (default) | text
   # dir: ""             # log directory; defaults to ~/.rclaude/logs
-  # max_size_mb: 100    # rotate after this size
+  # max_size_mb: 100    # rotate after this size (MB)
   # max_backups: 3      # rotated files to keep
   # max_age_days: 7     # days to keep rotated files
 ```
@@ -347,11 +347,11 @@ daemon config:
 
 ```yaml
 audit:
-  enabled: true
-  driver: "sqlite"      # sqlite | mysql | postgres
-  dsn: "file:audit.db"  # driver-specific DSN
-  table: "file_audit_log"
-  queue_size: 256       # in-memory buffer before writes block
+  enabled: true             # Whether auditing is on; defaults to false (off).
+  driver: "sqlite"          # sqlite | mysql | postgres (aliases sqlite3/postgresql/pgsql also accepted)
+  dsn: "file:audit.db"      # Driver-specific DSN; required when enabled is true.
+  table: "file_audit_log"   # Table name for audit records; letters, digits, underscores only. Defaults to file_audit_log.
+  queue_size: 256           # In-memory buffer size before writes block; defaults to 256.
 ```
 
 ## Environment Overrides

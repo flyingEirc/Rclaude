@@ -165,34 +165,24 @@ go build ./...
 示例 `server.yaml`：
 
 ```yaml
-listen: ":9326"
+listen: ":9326"                      # gRPC 监听地址，":端口" 表示监听所有网卡；必填
 auth:
   tokens:
-    "example-token": "example-user"
+    "example-token": "example-user"  # token -> user_id 映射；daemon 用 token 换取自己的 user_id，至少要有一条
 fuse:
-  mountpoint: "/workspace"
+  mountpoint: "/workspace"           # FUSE 挂载根目录，必须是绝对路径；每个用户会挂在 {mountpoint}/{user_id} 下
 cache:
-  max_bytes: 268435456
+  max_bytes: 268435456               # Server 侧整文件内容缓存上限（字节），<=0 表示关闭缓存
 prefetch:
-  enabled: true
-  max_file_bytes: 102400
-  max_files_per_dir: 16
-request_timeout: 10s
-offline_readonly_ttl: 5m
+  enabled: true                      # 是否在读目录后预取小文件内容（依赖 cache.max_bytes > 0，否则自动跳过）
+  max_file_bytes: 102400             # 触发预取的单文件大小上限（字节），超过此大小的文件不预取
+  max_files_per_dir: 16              # 单次目录预取的最大文件数
+request_timeout: 10s                 # 单次文件请求（Lookup/Getattr/Read/Write 等）超时时间，<=0 时回退默认值 10s
+offline_readonly_ttl: 5m             # daemon 断线后，Server 侧缓存内容维持只读可访问的时长，默认 5m
 log:
-  level: "info"
-  format: "text"
+  level: "info"                      # 日志级别：debug | info | warn | error
+  format: "text"                     # 日志格式：json（默认）| text
 ```
-
-说明：
-
-- `listen`：gRPC 监听地址
-- `auth.tokens`：`token -> user_id` 映射
-- `fuse.mountpoint`：绝对路径，Server 会在此处挂载工作区根目录
-- `cache.max_bytes`：Server 侧内容缓存大小，`0` 表示关闭
-- `prefetch.*`：目录读取后的预取策略
-- `request_timeout`：单次文件请求超时
-- `offline_readonly_ttl`：daemon 断线后缓存只读保留时长
 
 ### 2. 准备 daemon 配置
 
@@ -200,35 +190,24 @@ log:
 
 ```yaml
 server:
-  address: "127.0.0.1:9326"
-  token: "example-token"
+  address: "127.0.0.1:9326"           # Server gRPC 地址，必填
+  token: "example-token"              # 必须对应 Server 侧 auth.tokens 中的某个 token
 workspace:
-  path: "/absolute/path/to/workspace"
-  exclude:
+  path: "/absolute/path/to/workspace" # 本地工作区根目录，必须是绝对路径
+  exclude:                            # 扫描/监听时排除的路径模式（glob）
     - ".git"
     - "node_modules"
     - "vendor"
-  sensitive_patterns:
+  sensitive_patterns:                 # 在内置敏感规则（.env、私钥、证书等）之外追加的敏感路径模式
     - "secrets/**"
 rate_limit:
-  read_bytes_per_sec: 0
-  write_bytes_per_sec: 0
-self_write_ttl: 2s
+  read_bytes_per_sec: 0               # daemon 返回读取内容的字节速率上限，<=0 表示不限速
+  write_bytes_per_sec: 0              # daemon 落盘写入的字节速率上限，<=0 表示不限速
+self_write_ttl: 2s                    # daemon 自己写回文件后，短时间内忽略由此触发的本地监听事件，避免自触发回环；<=0 时回退默认值 2s
 log:
-  level: "info"
-  format: "text"
+  level: "info"                       # 日志级别：debug | info | warn | error
+  format: "text"                      # 日志格式：json（默认）| text
 ```
-
-说明：
-
-- `server.address`：Server 地址
-- `server.token`：与 Server 侧 `auth.tokens` 中某个 token 对应
-- `workspace.path`：必须是绝对路径
-- `workspace.exclude`：扫描和监听时排除的路径模式
-- `workspace.sensitive_patterns`：在默认敏感规则之外追加的敏感路径模式
-- `rate_limit.read_bytes_per_sec`：daemon 返回读取内容的字节速率限制，`0` 为关闭
-- `rate_limit.write_bytes_per_sec`：daemon 落盘写入的字节速率限制，`0` 为关闭
-- `self_write_ttl`：用于抑制 daemon 自写回产生的回环监听事件
 
 ### 3. 启动
 
@@ -297,10 +276,10 @@ Server 配置示例（固定 Claude Code；省略 `pty.binary` 即为登录 shel
 
 ```yaml
 pty:
-  binary: "claude"
-  args: []
-  workspace_root: "/workspace"
-  env_passthrough:
+  binary: "claude"                    # 固定启动的可执行程序名/路径；留空（默认）则启动用户登录 shell
+  args: []                            # 传给 binary 的启动参数
+  workspace_root: "/workspace"        # PTY 工作目录根路径，必须是绝对路径；应与 fuse.mountpoint 保持一致，实际 cwd 为 {workspace_root}/{user_id}
+  env_passthrough:                    # 允许从 Server 进程环境透传给 PTY 子进程的变量白名单，默认即为下面这份列表
     - "TERM"
     - "LANG"
     - "LC_ALL"
@@ -309,24 +288,24 @@ pty:
     - "HOME"
     - "SHELL"
     - "CLAUDE_CONFIG_DIR"
-  frame_max_bytes: 65536
+  frame_max_bytes: 65536               # 单帧 PTY 数据的最大字节数，必须 > 0，默认 65536（64KiB）
 ```
 
 要切换到 Codex，可以把 `pty.binary` 改成 Server 侧可执行路径，例如：
 
 ```yaml
 pty:
-  binary: "/root/.local/bin/codex"
-  args: []
-  workspace_root: "/workspace"
+  binary: "/root/.local/bin/codex"    # 固定启动的可执行程序路径（Server 机器上必须可解析）
+  args: []                            # 传给 binary 的启动参数
+  workspace_root: "/workspace"        # PTY 工作目录根路径，必须是绝对路径
 ```
 
 如果要做可重复的 Codex 文件读取验收，也可以让 Server 固定启动 `codex exec`：
 
 ```yaml
 pty:
-  binary: "/root/.local/bin/codex"
-  args:
+  binary: "/root/.local/bin/codex"    # 固定启动的可执行程序路径
+  args:                                # 传给 binary 的启动参数；此处等价于每次 attach 都固定运行一次只读 codex exec
     - "exec"
     - "--skip-git-repo-check"
     - "--sandbox"
@@ -353,10 +332,10 @@ Rclaude 仓库包含一组最小远程/本地测试闭包，详见 [deploy/minim
 
 ```yaml
 log:
-  level: "info"
+  level: "info"         # 日志级别：debug | info | warn | error
   format: "json"        # json（默认）| text
   # dir: ""             # 日志目录，省略时用 ~/.rclaude/logs
-  # max_size_mb: 100    # 单文件轮转大小
+  # max_size_mb: 100    # 单文件轮转大小（MB）
   # max_backups: 3      # 保留轮转文件个数
   # max_age_days: 7     # 轮转文件保留天数
 ```
@@ -385,11 +364,11 @@ daemon 配置里开启：
 
 ```yaml
 audit:
-  enabled: true
-  driver: "sqlite"      # sqlite | mysql | postgres
-  dsn: "file:audit.db"  # 各驱动各自的 DSN
-  table: "file_audit_log"
-  queue_size: 256       # 内存缓冲，满后写入阻塞
+  enabled: true             # 是否开启审计，默认 false（关闭）
+  driver: "sqlite"          # sqlite | mysql | postgres（也接受 sqlite3/postgresql/pgsql 别名）
+  dsn: "file:audit.db"      # 各驱动各自的 DSN；enabled 为 true 时必填
+  table: "file_audit_log"   # 审计记录写入的表名，只能包含字母、数字、下划线，默认 file_audit_log
+  queue_size: 256           # 写入前的内存缓冲队列大小，写满后落库会阻塞，默认 256
 ```
 
 ## 测试与开发命令
