@@ -38,8 +38,11 @@ Implemented features include:
 - workspace boundary protection and path traversal defense
 - YAML configuration with `RCLAUDE_*` environment overrides
 - static token authentication mapped to `user_id`
-- RemotePTY attach from local `rclaude-claude` to a Server-side PTY process
+- unified `rclaude` local entry that starts the daemon and the RemotePTY attach together, with dependency-ordered startup and coordinated retry (`pkg/startup`)
 - Server-side terminal passthrough that defaults to the user's interactive login shell in `/workspace/{user_id}` (ls/cd, then launch `claude`/`codex` yourself); pin a fixed program with `pty.binary` / `pty.args` if you prefer
+- graceful shutdown on terminal close: SIGINT/SIGTERM/SIGHUP drain in-flight file streams and the PTY before the daemon and session exit
+- file-based structured logging (JSON by default, size/age rotation) that never writes to the terminal, so the PTY passthrough stays clean
+- optional audit log persisting remote file operations to SQLite / MySQL / PostgreSQL
 
 ## Architecture
 
@@ -69,11 +72,19 @@ rclaude-server
 Execution environment
 ```
 
+On the daemon machine these run through the unified `rclaude` entry
+(`app/rclaude`), which starts the daemon (`RemoteFS.Connect`) and the terminal
+attach (`RemotePTY.Attach`) together and coordinates their startup so the PTY
+only attaches after the daemon has registered. `rclaude-daemon` (`app/client`)
+and `rclaude-claude` (`app/clientpty`) remain as split single-purpose entries
+for diagnostics.
+
 Design points:
 
 - The daemon initiates the connection to the Server, so the Server does not need to dial back into a user's local machine.
 - FUSE is the primary integration surface.
 - Server-side cache and prefetch are built into the architecture.
+- The two client roles (file sync and terminal) share one config and one coordinated lifecycle in the unified entry, but stay independent gRPC streams.
 - The compatibility target is ordinary path-based file semantics, not one specific model or Agent.
 
 For the minimal dual-machine deployment and manual acceptance flow, see [deploy/minimal/README.md](deploy/minimal/README.md).
@@ -94,10 +105,13 @@ Notes:
 
 ```text
 api/                    gRPC protocol and generated code
-app/client/             rclaude-daemon entrypoint
-app/clientpty/          rclaude-claude PTY client entrypoint
+app/rclaude/            rclaude unified local entry (daemon + PTY, coordinated startup)
 app/server/             rclaude-server entrypoint
+app/client/             rclaude-daemon entrypoint (daemon only, split diagnostics)
+app/clientpty/          rclaude-claude PTY client entrypoint (PTY only, split diagnostics)
 pkg/config/             YAML and environment configuration loading
+pkg/logx/               file-based structured logging (never writes to the terminal)
+pkg/startup/            startup coordinator for the unified entry (dependency gating + retries)
 pkg/auth/               token authentication
 pkg/safepath/           workspace path validation and boundary protection
 pkg/fstree/             file-tree metadata index
@@ -105,9 +119,15 @@ pkg/session/            Server-side user sessions and request routing
 pkg/contentcache/       Server-side whole-file content cache
 pkg/fusefs/             FUSE filesystem view
 pkg/syncer/             daemon-side scan, watch, sync, and request handling
+pkg/ptyhost/            Server-side PTY child-process spawn (login shell or pinned binary)
+pkg/ptyservice/         Server-side RemotePTY gRPC service
+pkg/ptyclient/          daemon-side terminal <-> PTY gRPC bridge
+pkg/ptyattach/          local terminal attach (raw mode, resize, exit codes)
+pkg/audit/              optional DB audit log for remote file operations
 pkg/transport/          gRPC connection and stream wrappers
 pkg/ratelimit/          daemon-side byte-rate limiting
 internal/inmemtest/     in-memory end-to-end test harness
+internal/testutil/      shared test fixtures and helpers
 deploy/minimal/         minimal remote/local test closure (configs + start/preflight scripts)
 tools/                  proto codegen tool-version pin (tools.go)
 ```
@@ -123,7 +143,10 @@ make tools
 Build the binaries:
 
 ```bash
+# Server (remote Linux) and the unified local entry cover the normal flow.
 go build -o ./bin/rclaude-server ./app/server
+go build -o ./bin/rclaude ./app/rclaude
+# Optional split single-purpose entries, useful for diagnostics.
 go build -o ./bin/rclaude-daemon ./app/client
 go build -o ./bin/rclaude-claude ./app/clientpty
 ```
@@ -277,6 +300,59 @@ Current observed status:
 - `/bin/sh` scripted PTY plus FUSE file reads pass.
 - Codex CLI TUI attach, cwd `/workspace/{user_id}`, `codex exec` reading a daemon-backed FUSE file, and remote exit code `0` propagation pass.
 - Claude Code TUI can render through RemotePTY, but main-prompt acceptance depends on Claude Code onboarding/login for the Server OS user. A Claude login on the daemon machine is not reused by the Server-side process.
+
+## Logging, Startup, And Shutdown
+
+Logs never go to the terminal. Because the unified `rclaude` entry hands the
+terminal to the remote PTY, all diagnostics are written to a rotating log file
+instead, so terminal output stays a clean passthrough. The `log` block controls
+this on both sides:
+
+```yaml
+log:
+  level: "info"
+  format: "json"        # json (default) | text
+  # dir: ""             # log directory; defaults to ~/.rclaude/logs
+  # max_size_mb: 100    # rotate after this size
+  # max_backups: 3      # rotated files to keep
+  # max_age_days: 7     # days to keep rotated files
+```
+
+The unified entry writes `rclaude.log`; the split entries write
+`rclaude-daemon.log` and their own files. On the terminal you only see one
+status line per component (`daemon started`, `pty started`).
+
+Startup is coordinated, not raced. The daemon and PTY start together, but the
+PTY declares a dependency on the daemon, so its first attach waits until the
+daemon has registered with the Server instead of failing with
+`daemon not connected` and retrying. Residual failures still fall back to
+event-bus retry, tunable in the daemon config:
+
+```yaml
+startup:
+  max_retries: 3        # attempts beyond the first (total = 1 + max_retries)
+  retry_delay: 1s       # wait after a retry notification before retrying
+```
+
+Shutdown is graceful. `SIGINT` (Ctrl-C), `SIGTERM`, and `SIGHUP` (closing the
+whole terminal window) all cancel the run context so in-flight file streams and
+the PTY finish before the daemon and session exit — and the exit is logged. A
+second signal, or a 10s grace timeout, forces an immediate exit.
+
+## Optional File-Operation Audit
+
+The daemon can persist a record of each remote file operation to a local
+database for after-the-fact auditing. It is off by default; enable it in the
+daemon config:
+
+```yaml
+audit:
+  enabled: true
+  driver: "sqlite"      # sqlite | mysql | postgres
+  dsn: "file:audit.db"  # driver-specific DSN
+  table: "file_audit_log"
+  queue_size: 256       # in-memory buffer before writes block
+```
 
 ## Environment Overrides
 

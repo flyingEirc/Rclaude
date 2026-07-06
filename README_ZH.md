@@ -38,8 +38,11 @@ Language: 中文 | [English](README.md)
 - 工作区边界保护：路径校验、防路径穿越、限制只访问指定 workspace
 - 配置加载与环境变量覆盖：基于 YAML + `RCLAUDE_*` 环境变量
 - 静态 token 鉴权：token 映射到 `user_id`
-- 远程 PTY：本地 `rclaude-claude` 可 attach 到 Server 侧 PTY 进程
+- 统一入口 `rclaude`：本地一次启动 daemon 与 RemotePTY attach，按依赖顺序协调启动与重试（`pkg/startup`）
 - Server 侧终端透传：默认在 `/workspace/{user_id}` 启动用户的交互式登录 shell（可 ls/cd，再自行启动 `claude`/`codex`）；也可用 `pty.binary` / `pty.args` 固定某个程序
+- 关闭终端时优雅退出：SIGINT/SIGTERM/SIGHUP 会先让在途文件流与 PTY 收尾，再关闭 daemon 与会话
+- 文件化结构日志：默认 JSON、按大小/时间轮转，且从不写终端，保证 PTY 透传干净
+- 可选审计日志：把远端文件操作记录持久化到 SQLite / MySQL / PostgreSQL
 
 ## 架构概览
 
@@ -71,14 +74,20 @@ rclaude-server
 执行环境
 ```
 
+在 daemon 机器上，这些通过统一入口 `rclaude`（`app/rclaude`）运行：它同时拉起
+daemon（`RemoteFS.Connect`）与终端 attach（`RemotePTY.Attach`），并协调二者的启动，
+使 PTY 只在 daemon 完成向 Server 注册后才 attach。`rclaude-daemon`（`app/client`）
+与 `rclaude-claude`（`app/clientpty`）作为拆分的单一职责入口保留，用于诊断。
+
 设计重点：
 
 - Daemon 主动连 Server，避免要求 Server 反向连接用户本地机器
 - FUSE 是主方案，不是兼容层
 - Server 端缓存和预取是架构内的一等能力，不是附加优化
+- 文件同步与终端两条职责在统一入口中共享一份配置和一条协调生命周期，但仍是各自独立的 gRPC 流
 - 执行环境的兼容目标是“普通文件路径语义”，而不是某个特定模型或 Agent
 
-最小双机部署与手工验收流程见 [deploy/minimal/README.md](deploy/minimal/README.md)。
+最小双机部署与手工验收流程见 [deploy/minimal/README_ZH.md](deploy/minimal/README_ZH.md)。
 
 ## 平台与运行要求
 
@@ -97,10 +106,13 @@ rclaude-server
 
 ```text
 api/                    gRPC 协议与生成代码
-app/client/             rclaude-daemon 命令入口
-app/clientpty/          rclaude-claude PTY 客户端入口
+app/rclaude/            rclaude 统一本地入口（daemon + PTY，协调启动）
 app/server/             rclaude-server 命令入口
+app/client/             rclaude-daemon 命令入口（仅 daemon，拆分诊断用）
+app/clientpty/          rclaude-claude PTY 客户端入口（仅 PTY，拆分诊断用）
 pkg/config/             YAML / 环境变量配置加载
+pkg/logx/               文件化结构日志（从不写终端）
+pkg/startup/            统一入口的启动协调器（依赖门控 + 重试）
 pkg/auth/               token 鉴权
 pkg/safepath/           工作区路径校验与边界保护
 pkg/fstree/             文件树元数据索引
@@ -108,9 +120,15 @@ pkg/session/            Server 侧用户会话与请求路由
 pkg/contentcache/       Server 侧整文件内容缓存
 pkg/fusefs/             FUSE 文件系统视图
 pkg/syncer/             daemon 侧同步、扫描、监听、请求处理
+pkg/ptyhost/            Server 侧 PTY 子进程拉起（登录 shell 或固定二进制）
+pkg/ptyservice/         Server 侧 RemotePTY gRPC 服务
+pkg/ptyclient/          daemon 侧终端 <-> PTY 的 gRPC 桥接
+pkg/ptyattach/          本地终端 attach（raw 模式、resize、退出码）
+pkg/audit/              可选的远端文件操作审计落库
 pkg/transport/          gRPC 连接与 stream 封装
 pkg/ratelimit/          daemon 侧字节限流
 internal/inmemtest/     in-memory 端到端测试夹具
+internal/testutil/      共享测试夹具与辅助工具
 deploy/minimal/         最小远程/本地测试闭包（配置 + 启动/preflight 脚本）
 tools/                  proto 代码生成插件版本锁定 (tools.go)
 ```
@@ -126,7 +144,10 @@ make tools
 编译主程序：
 
 ```bash
+# Server（远程 Linux）与统一本地入口覆盖常规流程
 go build -o ./bin/rclaude-server ./app/server
+go build -o ./bin/rclaude ./app/rclaude
+# 可选的拆分单一职责入口，便于诊断
 go build -o ./bin/rclaude-daemon ./app/client
 go build -o ./bin/rclaude-claude ./app/clientpty
 ```
@@ -313,7 +334,7 @@ pty:
     - "Read README.md in the current directory and reply with the exact first line only."
 ```
 
-Rclaude 仓库包含一组最小远程/本地测试闭包，详见 [deploy/minimal/README.md](deploy/minimal/README.md)。推荐顺序：
+Rclaude 仓库包含一组最小远程/本地测试闭包，详见 [deploy/minimal/README_ZH.md](deploy/minimal/README_ZH.md)。推荐顺序：
 
 1. Preflight：本地运行 `preflight-daemon.sh`（Server 侧可选 `preflight-server.sh`）。
 2. 启动 Server：`deploy/minimal/start-server.sh` 交叉编译、部署并在远程启动 `rclaude-server`。
@@ -324,6 +345,52 @@ Rclaude 仓库包含一组最小远程/本地测试闭包，详见 [deploy/minim
 - `/bin/sh` scripted PTY + FUSE 文件读取已通过。
 - Codex CLI TUI attach、cwd `/workspace/{user_id}`、`codex exec` 读取 daemon-backed FUSE 文件、远端 code `0` 回传已通过。
 - Claude Code TUI 可以通过 RemotePTY 渲染，但主提示符验收取决于 Server OS user 的 Claude Code onboarding/login 状态；daemon 机器上的 Claude 登录态不会自动复用到 Server。
+
+## 日志、启动与退出
+
+日志从不写终端。统一入口 `rclaude` 会把终端交给远端 PTY，因此所有诊断信息都写入
+会轮转的日志文件，保证终端输出是干净透传。两侧都通过 `log` 段控制：
+
+```yaml
+log:
+  level: "info"
+  format: "json"        # json（默认）| text
+  # dir: ""             # 日志目录，省略时用 ~/.rclaude/logs
+  # max_size_mb: 100    # 单文件轮转大小
+  # max_backups: 3      # 保留轮转文件个数
+  # max_age_days: 7     # 轮转文件保留天数
+```
+
+统一入口写 `rclaude.log`；拆分入口写 `rclaude-daemon.log` 等各自的文件。终端上你只会
+看到每个组件一行状态（`daemon started`、`pty started`）。
+
+启动是协调的，不是竞争的。daemon 与 PTY 一起启动，但 PTY 声明了对 daemon 的依赖，
+因此它的首次 attach 会等到 daemon 完成向 Server 注册，而不是先失败在
+`daemon not connected` 再重试。残余失败仍会回退到事件总线重试，可在 daemon 配置里调整：
+
+```yaml
+startup:
+  max_retries: 3        # 初始尝试之外的重试次数（总尝试数 = 1 + max_retries）
+  retry_delay: 1s       # 收到重试通知后再次尝试前的等待
+```
+
+退出是优雅的。`SIGINT`（Ctrl-C）、`SIGTERM` 与 `SIGHUP`（关闭整个终端窗口）都会取消
+运行上下文，让在途文件流与 PTY 收尾后再关闭 daemon 与会话，并把退出写进日志。第二次
+信号或 10s 宽限超时会强制立即退出。
+
+## 可选的文件操作审计
+
+daemon 可以把每次远端文件操作记录持久化到本地数据库，用于事后审计。默认关闭，在
+daemon 配置里开启：
+
+```yaml
+audit:
+  enabled: true
+  driver: "sqlite"      # sqlite | mysql | postgres
+  dsn: "file:audit.db"  # 各驱动各自的 DSN
+  table: "file_audit_log"
+  queue_size: 256       # 内存缓冲，满后写入阻塞
+```
 
 ## 测试与开发命令
 
@@ -366,4 +433,4 @@ go build ./...
 ## 相关入口
 
 - English README: [README.md](README.md)
-- 最小双机部署：[deploy/minimal/README.md](deploy/minimal/README.md)
+- 最小双机部署（中文）：[deploy/minimal/README_ZH.md](deploy/minimal/README_ZH.md)

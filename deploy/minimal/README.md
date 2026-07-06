@@ -1,5 +1,7 @@
 # Minimal Test Closure
 
+Language: English | [中文](README_ZH.md)
+
 The smallest supported flow for a real remote/local Rclaude linkage test:
 
 - `rclaude-server` runs on a remote Linux box (FUSE-capable),
