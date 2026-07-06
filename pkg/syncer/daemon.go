@@ -188,6 +188,19 @@ func nextRetryDelay(
 	return delay, nil
 }
 
+// dialTLS 把 config 的 TLS 段映射为 transport 层的拨号 TLS 选项；
+// 未启用时返回 nil，Dial 走明文，等价于改造前行为。
+func dialTLS(cfg config.ServerTLSConfig) *transport.TLSConfig {
+	if !cfg.Enabled {
+		return nil
+	}
+	return &transport.TLSConfig{
+		ServerName:         cfg.ServerName,
+		CAFile:             cfg.CAFile,
+		InsecureSkipVerify: cfg.InsecureSkipVerify,
+	}
+}
+
 func runSession(
 	ctx context.Context,
 	opts RunOptions,
@@ -197,6 +210,7 @@ func runSession(
 	conn, err := transport.Dial(ctx, transport.DialOptions{
 		Address: opts.Config.Server.Address,
 		Dialer:  opts.Dialer,
+		TLS:     dialTLS(opts.Config.Server.TLS),
 	})
 	if err != nil {
 		return false, fmt.Errorf("syncer: dial server: %w", err)

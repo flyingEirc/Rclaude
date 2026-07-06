@@ -65,11 +65,13 @@ type loadedConfig struct {
 	Address  string
 	Token    string
 	FrameMax int
+	TLS      *transport.TLSConfig
 }
 
 type dialConfig struct {
 	Address string
 	Token   string
+	TLS     *transport.TLSConfig
 }
 
 type commandDeps struct {
@@ -157,6 +159,7 @@ func prepareCommandRuntime(ctx context.Context, deps commandDeps, cfg loadedConf
 	stream, closer, err := deps.dialPTY(ctx, dialConfig{
 		Address: cfg.Address,
 		Token:   cfg.Token,
+		TLS:     cfg.TLS,
 	})
 	if err != nil {
 		if restoreErr := termSession.Restore(); restoreErr != nil {
@@ -218,7 +221,21 @@ func loadClientConfigFromDaemon(path string) (loadedConfig, error) {
 		Address:  strings.TrimSpace(cfg.Server.Address),
 		Token:    token,
 		FrameMax: clientFrameMax(cfg.PTY.FrameMaxBytes),
+		TLS:      dialTLS(cfg.Server.TLS),
 	}, nil
+}
+
+// dialTLS 把 config 的 TLS 段映射为 transport 层的拨号 TLS 选项；
+// 未启用时返回 nil，Dial 走明文，等价于改造前行为。
+func dialTLS(cfg config.ServerTLSConfig) *transport.TLSConfig {
+	if !cfg.Enabled {
+		return nil
+	}
+	return &transport.TLSConfig{
+		ServerName:         cfg.ServerName,
+		CAFile:             cfg.CAFile,
+		InsecureSkipVerify: cfg.InsecureSkipVerify,
+	}
 }
 
 func clientFrameMax(n int64) int {
@@ -264,7 +281,7 @@ func closePipeWriter(writer *io.PipeWriter) {
 }
 
 func dialRemotePTY(ctx context.Context, cfg dialConfig) (ptyclient.Stream, io.Closer, error) {
-	conn, err := transport.Dial(ctx, transport.DialOptions{Address: cfg.Address})
+	conn, err := transport.Dial(ctx, transport.DialOptions{Address: cfg.Address, TLS: cfg.TLS})
 	if err != nil {
 		return nil, nil, err
 	}

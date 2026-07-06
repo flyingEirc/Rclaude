@@ -59,9 +59,35 @@ var (
 	auditTablePattern = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
 )
 
+// ServerEndpoint 描述 daemon/pty 客户端连接的远端 Server。
 type ServerEndpoint struct {
+	// Address 是 Server 的 gRPC 地址。明文时形如 "1.2.3.4:9326"；
+	// 启用 TLS（见 TLS.Enabled）时应指向 TLS 终止端点，形如 "rclaude.example.com:443"。
 	Address string `mapstructure:"address"`
-	Token   string `mapstructure:"token"`
+	// Token 是应用层 bearer 鉴权凭据，随 gRPC metadata 发送，与传输层加密正交。
+	Token string `mapstructure:"token"`
+	// TLS 是可选的传输层 TLS 配置；省略或 Enabled=false 时保持明文 gRPC（默认）。
+	TLS ServerTLSConfig `mapstructure:"tls"`
+}
+
+// ServerTLSConfig 控制 daemon/pty 客户端到 Server 的 TLS 校验。
+// 典型用法是在 Server 前置 Caddy 等 TLS 终止器：Server 二进制保持明文 h2c，
+// 由前置组件终止 TLS 并 h2c 回源。Enabled=false 时保持明文 gRPC，与既有行为
+// 完全一致。所有字段仅作用于客户端拨号，不影响 Server 端。
+// 详见 docs/design/caddy-tls-termination.md 与 deploy/tls/。
+type ServerTLSConfig struct {
+	// Enabled 为 true 时客户端以 TLS 连接 Server（此时 Address 应为 TLS 端点，
+	// 例如 Caddy 监听的 :443）；为 false 时明文连接。
+	Enabled bool `mapstructure:"enabled"`
+	// ServerName 是 TLS 握手的 SNI 与证书校验用主机名；留空时取 Address 的 host。
+	// 当客户端直连源站 IP、但证书签发给某域名时，必须显式设为该域名。
+	ServerName string `mapstructure:"server_name"`
+	// CAFile 指向自定义根 CA（PEM 文件路径）。对接 Caddy 内部 CA / 自签证书时填写；
+	// 公网可信证书（如 Let's Encrypt）留空以使用操作系统根证书。
+	CAFile string `mapstructure:"ca_file"`
+	// InsecureSkipVerify 跳过证书校验（不校验主机名与信任链）。仅供诊断，
+	// 切勿用于生产：开启后 TLS 只提供加密、不再提供服务端身份认证。
+	InsecureSkipVerify bool `mapstructure:"insecure_skip_verify"`
 }
 
 type Workspace struct {
