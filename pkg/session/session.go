@@ -9,8 +9,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"google.golang.org/protobuf/proto"
-
 	remotefsv1 "flyingEirc/Rclaude/api/proto/remotefs/v1"
 	"flyingEirc/Rclaude/pkg/contentcache"
 	"flyingEirc/Rclaude/pkg/fstree"
@@ -504,12 +502,16 @@ func (s *Session) prepareRequest(
 		ctx = context.Background()
 	}
 
-	cloned, ok := proto.Clone(req).(*remotefsv1.FileRequest)
-	if !ok {
-		return nil, nil, ErrNilRequest
+	// 浅构一个新请求，复用同一个 Operation（连带 write payload 切片），只补 request id。
+	// 相比 proto.Clone 省去对整块 Content 的深拷贝：调用方不复用原 req，下游 grpc 只读
+	// 序列化，共享是安全的；且不改动调用方对象。
+	requestID := req.GetRequestId()
+	if requestID == "" {
+		requestID = s.nextRequestID()
 	}
-	if cloned.GetRequestId() == "" {
-		cloned.RequestId = s.nextRequestID()
+	cloned := &remotefsv1.FileRequest{
+		RequestId: requestID,
+		Operation: req.GetOperation(),
 	}
 	return ctx, cloned, nil
 }
