@@ -148,7 +148,11 @@ func (t *Tree) Snapshot() []*remotefsv1.FileInfo {
 }
 
 // insertLocked 在持锁前提下插入节点；自动补齐祖先目录占位。
+// 用非目录覆盖既有目录时，先回收旧子树，避免遗留孤儿节点。
 func (t *Tree) insertLocked(p string, info *remotefsv1.FileInfo) {
+	if prev, ok := t.nodes[p]; ok && prev.info.GetIsDir() && !info.GetIsDir() {
+		t.pruneChildren(p, prev)
+	}
 	t.ensureAncestors(p)
 	stored := cloneInfo(info)
 	stored.Path = p
@@ -156,10 +160,22 @@ func (t *Tree) insertLocked(p string, info *remotefsv1.FileInfo) {
 		info:     stored,
 		children: childrenMapForInfo(t.nodes[p], stored),
 	}
-	// 把自己注册到父目录的 children 中。
+	// 把自己注册到父目录的 children 中；父节点经 ensureAncestors 保证为带 map 的目录，
+	// 仍对 nil map 兜底以防御任意输入。
 	parent, base := splitParent(p)
 	if pn, ok := t.nodes[parent]; ok {
+		if pn.children == nil {
+			pn.children = make(map[string]struct{})
+		}
 		pn.children[base] = struct{}{}
+	}
+}
+
+// pruneChildren 删除节点 p 的全部子孙（保留 p 本身），
+// 用于目录被同名文件覆盖时回收原有子树。
+func (t *Tree) pruneChildren(p string, n *node) {
+	for child := range n.children {
+		t.deleteLocked(joinPath(p, child))
 	}
 }
 
@@ -176,12 +192,15 @@ func childrenMapForInfo(prev *node, info *remotefsv1.FileInfo) map[string]struct
 }
 
 // ensureAncestors 把 p 所有祖先目录补齐为占位目录节点。
+// 已存在但被当作文件（children 为 nil）的祖先会被升级为目录：子项的存在本身
+// 即证明其父路径是目录，据此修正，避免向 nil children map 赋值导致 panic。
 func (t *Tree) ensureAncestors(p string) {
 	parent, _ := splitParent(p)
 	if parent == "" {
 		return
 	}
-	if _, ok := t.nodes[parent]; ok {
+	if n, ok := t.nodes[parent]; ok {
+		promoteToDir(n)
 		return
 	}
 	t.ensureAncestors(parent)
@@ -194,7 +213,28 @@ func (t *Tree) ensureAncestors(p string) {
 	}
 	gp, base := splitParent(parent)
 	if gn, ok := t.nodes[gp]; ok {
+		if gn.children == nil {
+			gn.children = make(map[string]struct{})
+		}
 		gn.children[base] = struct{}{}
+	}
+}
+
+// promoteToDir 把已存在节点提升为目录语义：确保 IsDir=true 且 children 非 nil。
+// 此前被当作文件的父节点会被重置为干净的目录占位（丢弃文件态的 size 等元数据），
+// 与 ensureAncestors 创建占位目录的行为一致。
+func promoteToDir(n *node) {
+	if n == nil {
+		return
+	}
+	if !n.info.GetIsDir() {
+		n.info = &remotefsv1.FileInfo{
+			Path:  n.info.GetPath(),
+			IsDir: true,
+		}
+	}
+	if n.children == nil {
+		n.children = make(map[string]struct{})
 	}
 }
 

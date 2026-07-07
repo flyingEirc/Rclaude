@@ -92,7 +92,7 @@ func runPreparedServer(
 		return fmt.Errorf("server: build pty service: %w", err)
 	}
 
-	listener, grpcServer, err := newGRPCServer(cfg, verifier, service, ptyService)
+	listener, grpcServer, err := newGRPCServer(cfg, logger, verifier, service, ptyService)
 	if err != nil {
 		return err
 	}
@@ -150,6 +150,7 @@ func mountWorkspace(
 
 func newGRPCServer(
 	cfg *config.ServerConfig,
+	logger logx.Logger,
 	verifier auth.Verifier,
 	service *session.Service,
 	ptyService remotefsv1.RemotePTYServer,
@@ -158,8 +159,12 @@ func newGRPCServer(
 	if err != nil {
 		return nil, nil, fmt.Errorf("server: listen %q: %w", cfg.Listen, err)
 	}
+	// recovery 拦截器置于最外层，先于 auth 执行，以兜住整条 handler 同步栈的 panic。
 	grpcServer := grpc.NewServer(
-		grpc.StreamInterceptor(auth.StreamServerInterceptor(verifier)),
+		grpc.ChainStreamInterceptor(
+			recoveryStreamInterceptor(logger),
+			auth.StreamServerInterceptor(verifier),
+		),
 	)
 	remotefsv1.RegisterRemoteFSServer(grpcServer, service)
 	if ptyService != nil {

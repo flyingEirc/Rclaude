@@ -206,7 +206,10 @@ func sliceContent(data []byte, offset, length int64) []byte {
 	}
 
 	end := total
-	if length > 0 && offset+length < total {
+	// 用 length < total-offset 而非 offset+length < total：offset ∈ [0,total) 保证
+	// total-offset > 0，等价判断且避免 offset+length 在 length 接近 MaxInt64 时回绕为负、
+	// 进而 data[offset:end] 越界 panic。
+	if length > 0 && length < total-offset {
 		end = offset + length
 	}
 	return data[offset:end]

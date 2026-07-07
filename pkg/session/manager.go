@@ -86,13 +86,33 @@ func (m *Manager) Register(s *Session) (*Session, error) {
 	return prev, nil
 }
 
+// Get 返回某用户当前的 session。热路径（FUSE 每次操作经 requireSession 反复调用）
+// 只取读锁做查找，多用户之间可并发；仅当被请求的 session 已过期时才升级为写锁双检
+// 删除。其他用户的过期会话由冷路径（Register/UserIDs/LookupDaemon/HandleDisconnect）
+// 批量清理，不再由每次 Get 承担 O(N) 扫描。
 func (m *Manager) Get(userID string) (*Session, bool) {
+	m.mu.RLock()
+	s, ok := m.sessions[userID]
+	m.mu.RUnlock()
+	if !ok {
+		return nil, false
+	}
+	if s.IsExpired(time.Now()) {
+		m.removeExpired(userID, s)
+		return nil, false
+	}
+	return s, true
+}
+
+// removeExpired 在写锁下双检并删除一个已过期 session，避免误删期间被新连接替换掉的
+// 那个 session。
+func (m *Manager) removeExpired(userID string, expired *Session) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	m.pruneExpiredLocked(time.Now())
-	s, ok := m.sessions[userID]
-	return s, ok
+	if cur, ok := m.sessions[userID]; ok && cur == expired && cur.IsExpired(time.Now()) {
+		delete(m.sessions, userID)
+	}
 }
 
 func (m *Manager) LookupDaemon(userID string) (DaemonSession, bool) {

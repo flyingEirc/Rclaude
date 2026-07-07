@@ -7,6 +7,10 @@ import (
 	"sync"
 )
 
+// Signature 标识一份缓存内容的版本。它是**廉价的二级守卫**，不是新鲜度的唯一保证：
+// ModTime 为 Unix 秒，故「同一秒内 + 大小不变」的改写无法被签名区分。缓存的正确性
+// 主要依赖调用方的事件驱动失效（写操作后 ApplyWriteResult、以及 daemon 变更事件经
+// applyChange 触发的 Invalidate*）。切勿假设签名相等即内容未变。
 type Signature struct {
 	Size int64
 
