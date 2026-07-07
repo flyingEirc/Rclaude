@@ -132,7 +132,8 @@ func (s *Service) attach(stream grpcBidiStream) error {
 		return normalizeApplicationStop(err)
 	}
 
-	if err := sendAttachedFrame(stream, sessionID, cwd); err != nil {
+	predictive := attach.GetPredictiveEcho()
+	if err := sendAttachedFrame(stream, sessionID, cwd, predictive); err != nil {
 		cleanupHost(host)
 		return err
 	}
@@ -140,9 +141,10 @@ func (s *Service) attach(stream grpcBidiStream) error {
 		"user_id", userID,
 		"session_id", sessionID,
 		"cwd", cwd,
+		"predictive_echo", predictive,
 	)
 
-	return s.runAttached(stream, userID, sessionID, host)
+	return s.runAttached(stream, userID, sessionID, host, predictive)
 }
 
 func receiveAttachRequest(stream grpcBidiStream) (string, *remotefsv1.AttachReq, error) {
@@ -287,7 +289,13 @@ func (s *Service) binaryLabel() string {
 	return s.cfg.Binary
 }
 
-func (s *Service) runAttached(stream grpcBidiStream, userID string, sessionID string, host Host) error {
+func (s *Service) runAttached(
+	stream grpcBidiStream,
+	userID string,
+	sessionID string,
+	host Host,
+	predictive bool,
+) error {
 	stdoutCh := make(chan stdoutEvent, 8)
 	clientCh := make(chan clientEvent, 8)
 	exitCh := make(chan exitEvent, 1)
@@ -297,8 +305,21 @@ func (s *Service) runAttached(stream grpcBidiStream, userID string, sessionID st
 	go waitHost(host, exitCh)
 
 	runtime := newAttachRuntime(stream, host)
+	var tickCh <-chan time.Time
+	if predictive {
+		runtime.echo = &echoTracker{}
+		ticker := time.NewTicker(echoTickInterval)
+		defer ticker.Stop()
+		tickCh = ticker.C
+	}
+
 	for !runtime.readyToExit() {
-		nextStdout, nextClient, err := s.processAttachEvent(runtime, userID, sessionID, stdoutCh, clientCh, exitCh)
+		nextStdout, nextClient, err := s.processAttachEvent(runtime, userID, sessionID, attachChans{
+			stdout: stdoutCh,
+			client: clientCh,
+			exit:   exitCh,
+			tick:   tickCh,
+		})
 		if err != nil {
 			return normalizeApplicationStop(err)
 		}
@@ -308,24 +329,32 @@ func (s *Service) runAttached(stream grpcBidiStream, userID string, sessionID st
 	return runtime.finish()
 }
 
+type attachChans struct {
+	stdout chan stdoutEvent
+	client chan clientEvent
+	exit   chan exitEvent
+	tick   <-chan time.Time
+}
+
 func (s *Service) processAttachEvent(
 	runtime *attachRuntime,
 	userID string,
 	sessionID string,
-	stdoutCh chan stdoutEvent,
-	clientCh chan clientEvent,
-	exitCh chan exitEvent,
+	chans attachChans,
 ) (chan stdoutEvent, chan clientEvent, error) {
 	select {
-	case result, ok := <-stdoutCh:
-		nextStdout, err := runtime.handleStdoutEvent(stdoutCh, result, ok)
-		return nextStdout, clientCh, err
-	case result, ok := <-clientCh:
-		nextClient, err := s.handleClientEvent(runtime, userID, clientCh, result, ok)
-		return stdoutCh, nextClient, err
-	case result := <-exitCh:
+	case result, ok := <-chans.stdout:
+		nextStdout, err := runtime.handleStdoutEvent(chans.stdout, result, ok)
+		return nextStdout, chans.client, err
+	case result, ok := <-chans.client:
+		nextClient, err := s.handleClientEvent(runtime, userID, chans.client, result, ok)
+		return chans.stdout, nextClient, err
+	case result := <-chans.exit:
 		s.logPTYExited(userID, sessionID, result)
-		return stdoutCh, clientCh, runtime.handleExitEvent(result)
+		return chans.stdout, chans.client, runtime.handleExitEvent(result)
+	case now := <-chans.tick:
+		nextStdout, err := runtime.handleEchoTick(chans.stdout, now)
+		return nextStdout, chans.client, err
 	}
 }
 
@@ -344,7 +373,7 @@ func (s *Service) handleClientEvent(
 		return nil, nil
 	}
 
-	done, kind, err := s.handleClientFrame(runtime.stream, userID, runtime.host, result.frame)
+	done, kind, err := s.handleClientFrame(runtime, userID, result.frame)
 	if err != nil {
 		runtime.shutdown(true)
 		waitHostSilently(runtime.host)
@@ -358,16 +387,15 @@ func (s *Service) handleClientEvent(
 }
 
 func (s *Service) handleClientFrame(
-	stream grpcBidiStream,
+	runtime *attachRuntime,
 	userID string,
-	host Host,
 	frame *remotefsv1.ClientFrame,
 ) (bool, remotefsv1.Error_Kind, error) {
 	if payload := frame.GetStdin(); payload != nil {
-		return s.handleClientStdin(stream, userID, host, payload)
+		return s.handleClientStdin(runtime, userID, payload)
 	}
 	if resize := frame.GetResize(); resize != nil {
-		return s.handleClientResize(host, resize)
+		return s.handleClientResize(runtime.host, resize)
 	}
 	if frame.GetDetach() != nil {
 		return true, 0, nil
@@ -376,23 +404,23 @@ func (s *Service) handleClientFrame(
 }
 
 func (s *Service) handleClientStdin(
-	stream grpcBidiStream,
+	runtime *attachRuntime,
 	userID string,
-	host Host,
 	payload []byte,
 ) (bool, remotefsv1.Error_Kind, error) {
 	if int64(len(payload)) > s.cfg.FrameMax {
 		return false, remotefsv1.Error_KIND_PROTOCOL, ErrFrameTooLarge
 	}
 	if s.cfg.InputLimit != nil {
-		waitErr := s.cfg.InputLimit.Wait(stream.Context(), userID, len(payload))
+		waitErr := s.cfg.InputLimit.Wait(runtime.stream.Context(), userID, len(payload))
 		if waitErr != nil {
 			return false, remotefsv1.Error_KIND_RATE_LIMITED, fmt.Errorf("stdin limited: %w", waitErr)
 		}
 	}
-	if _, err := host.Stdin().Write(payload); err != nil {
+	if _, err := runtime.host.Stdin().Write(payload); err != nil {
 		return false, remotefsv1.Error_KIND_INTERNAL, err
 	}
+	runtime.echo.record(len(payload), time.Now())
 	return false, 0, nil
 }
 
@@ -516,12 +544,13 @@ func waitHost(host Host, ch chan<- exitEvent) {
 	ch <- exitEvent{info: info, err: err}
 }
 
-func sendAttachedFrame(stream grpcBidiStream, sessionID string, cwd string) error {
+func sendAttachedFrame(stream grpcBidiStream, sessionID string, cwd string, echoAck bool) error {
 	return stream.Send(&remotefsv1.ServerFrame{
 		Payload: &remotefsv1.ServerFrame_Attached{
 			Attached: &remotefsv1.Attached{
 				SessionId: sessionID,
 				Cwd:       cwd,
+				EchoAck:   echoAck,
 			},
 		},
 	})
@@ -596,6 +625,7 @@ type attachRuntime struct {
 	hostExited   bool
 	exitInfo     ptyhost.ExitInfo
 	shutdownOnce sync.Once
+	echo         *echoTracker
 }
 
 func newAttachRuntime(stream grpcBidiStream, host Host) *attachRuntime {
@@ -648,6 +678,46 @@ func (r *attachRuntime) handleStdoutError(stdoutCh chan stdoutEvent, err error) 
 	r.shutdown(true)
 	waitHostSilently(r.host)
 	return stdoutCh, r.sendApplicationError(remotefsv1.Error_KIND_INTERNAL, err.Error())
+}
+
+// handleEchoTick advances the echo-ack watermark. Pending stdout is drained
+// first so an ack never overtakes the echo bytes it vouches for.
+func (r *attachRuntime) handleEchoTick(stdoutCh chan stdoutEvent, now time.Time) (chan stdoutEvent, error) {
+	nextStdout, err := r.drainStdout(stdoutCh)
+	if err != nil {
+		return nextStdout, err
+	}
+	r.sendEchoAck(now)
+	return nextStdout, nil
+}
+
+func (r *attachRuntime) drainStdout(stdoutCh chan stdoutEvent) (chan stdoutEvent, error) {
+	for stdoutCh != nil {
+		select {
+		case result, ok := <-stdoutCh:
+			next, err := r.handleStdoutEvent(stdoutCh, result, ok)
+			if err != nil {
+				return next, err
+			}
+			stdoutCh = next
+		default:
+			return stdoutCh, nil
+		}
+	}
+	return stdoutCh, nil
+}
+
+func (r *attachRuntime) sendEchoAck(now time.Time) {
+	if !r.streamOpen {
+		return
+	}
+	offset, ok := r.echo.watermark(now)
+	if !ok {
+		return
+	}
+	if err := r.stream.Send(echoAckFrame(offset)); err != nil {
+		r.closeStream()
+	}
 }
 
 func (r *attachRuntime) handleExitEvent(result exitEvent) error {

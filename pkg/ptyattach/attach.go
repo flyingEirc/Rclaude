@@ -17,6 +17,7 @@ import (
 	"flyingEirc/Rclaude/pkg/auth"
 	"flyingEirc/Rclaude/pkg/config"
 	"flyingEirc/Rclaude/pkg/ptyclient"
+	"flyingEirc/Rclaude/pkg/ptypredict"
 	"flyingEirc/Rclaude/pkg/transport"
 )
 
@@ -65,6 +66,7 @@ type loadedConfig struct {
 	Address  string
 	Token    string
 	FrameMax int
+	Predict  string
 	TLS      *transport.TLSConfig
 }
 
@@ -93,6 +95,7 @@ type commandRuntime struct {
 	stdin       io.ReadCloser
 	stopBridge  func()
 	frameMax    int
+	predictor   ptyclient.Predictor
 }
 
 func defaultCommandDeps() commandDeps {
@@ -134,9 +137,11 @@ func runCommand(ctx context.Context, deps commandDeps, configPath string) (err e
 		Resizes:    runtime.termSession.Resizes,
 		FrameMax:   runtime.frameMax,
 		OnAttached: deps.onAttached,
+		Predictor:  runtime.predictor,
 		Attach: ptyclient.AttachParams{
-			InitialSize: runtime.termSession.InitialSize,
-			Term:        commandTermName(deps.termName),
+			InitialSize:    runtime.termSession.InitialSize,
+			Term:           commandTermName(deps.termName),
+			PredictiveEcho: runtime.predictor != nil,
 		},
 	}).Run(ctx)
 
@@ -181,7 +186,27 @@ func prepareCommandRuntime(ctx context.Context, deps commandDeps, cfg loadedConf
 		stdin:       stdin,
 		stopBridge:  stopBridge,
 		frameMax:    clientFrameMax(int64(cfg.FrameMax)),
+		predictor:   newPredictor(cfg.Predict, deps.stdout, termSession.InitialSize),
 	}, nil
+}
+
+// newPredictor builds the predictive-echo engine, or nil (plain passthrough)
+// when the mode is off or unrecognized.
+func newPredictor(mode string, out io.Writer, size ptyclient.WindowSize) ptyclient.Predictor {
+	parsed, ok := ptypredict.ParseMode(mode)
+	if !ok || parsed == ptypredict.ModeOff {
+		return nil
+	}
+	engine := ptypredict.New(ptypredict.Config{
+		Out:  out,
+		Cols: int(size.Cols),
+		Rows: int(size.Rows),
+		Mode: parsed,
+	})
+	if engine == nil {
+		return nil
+	}
+	return engine
 }
 
 func closeCommandRuntime(runErr *error, runtime commandRuntime) {
@@ -221,6 +246,7 @@ func loadClientConfigFromDaemon(path string) (loadedConfig, error) {
 		Address:  strings.TrimSpace(cfg.Server.Address),
 		Token:    token,
 		FrameMax: clientFrameMax(cfg.PTY.FrameMaxBytes),
+		Predict:  strings.TrimSpace(cfg.PTY.Predict),
 		TLS:      dialTLS(cfg.Server.TLS),
 	}, nil
 }

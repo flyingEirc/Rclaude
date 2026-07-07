@@ -22,6 +22,25 @@ type Stream interface {
 	CloseSend() error
 }
 
+// Predictor is the optional predictive-echo engine (pkg/ptypredict). When
+// set, it becomes the sole writer of terminal output: server stdout chunks
+// are delivered through OnServerOutput instead of being written directly,
+// and OnStdin may write locally predicted echo. A nil Predictor keeps the
+// plain passthrough behavior.
+type Predictor interface {
+	// OnStdin observes a stdin chunk about to be sent; offsetAfter is the
+	// cumulative count of stdin bytes sent including this chunk.
+	OnStdin(p []byte, offsetAfter uint64) error
+	// OnServerOutput forwards one server stdout chunk to the terminal.
+	OnServerOutput(chunk []byte) error
+	// OnEchoAck advances the server echo watermark.
+	OnEchoAck(offset uint64) error
+	// OnResize tracks local terminal size changes.
+	OnResize(cols, rows int)
+	// Tick runs periodic time-based state transitions.
+	Tick() error
+}
+
 // WindowSize is the local terminal geometry.
 type WindowSize struct {
 	Cols   uint32
