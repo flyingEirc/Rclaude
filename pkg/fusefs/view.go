@@ -355,9 +355,11 @@ func sliceReadContent(data []byte, offset int64, size int) []byte {
 	}
 
 	end := total
+	// length < total-offset 而非 offset+length < total：offset ∈ [0,total) 保证不溢出，
+	// 避免 offset+length 回绕为负导致下方切片越界。
 	if size > 0 {
 		length := int64(size)
-		if offset+length < total {
+		if length < total-offset {
 			end = offset + length
 		}
 	}

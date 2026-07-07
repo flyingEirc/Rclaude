@@ -62,3 +62,17 @@ func stableMode(info *remotefsv1.FileInfo) uint32 {
 	}
 	return syscall.S_IFREG
 }
+
+// forget 释放某路径的稳定 inode 记录（同时清文件/目录两种 mode 变体），
+// 由 Unlink/Rmdir/Rename(old) 在删除成功后调用，避免 byPath 随删除的路径无界增长。
+// 非递归：Rmdir 仅作用于空目录、Unlink 作用于文件，均已完整；Rename 一棵非空目录时，
+// 其子孙的旧路径条目仍会残留（属既有限制，量级有限）。
+func (a *inodeAllocator) forget(userID, relPath string) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	delete(a.byPath, inodeKey{userID: userID, relPath: relPath, mode: syscall.S_IFREG})
+	delete(a.byPath, inodeKey{userID: userID, relPath: relPath, mode: syscall.S_IFDIR})
+}

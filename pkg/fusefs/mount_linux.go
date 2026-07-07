@@ -242,16 +242,20 @@ func (n *workspaceNode) Mkdir(ctx context.Context, name string, _ uint32, out *f
 }
 
 func (n *workspaceNode) Unlink(ctx context.Context, name string) syscall.Errno {
-	if err := removePath(ctx, n.manager, n.userID, childPath(n.relPath, name)); err != nil {
+	childRel := childPath(n.relPath, name)
+	if err := removePath(ctx, n.manager, n.userID, childRel); err != nil {
 		return errnoFromError(err)
 	}
+	n.inodes.forget(n.userID, childRel)
 	return 0
 }
 
 func (n *workspaceNode) Rmdir(ctx context.Context, name string) syscall.Errno {
-	if err := removePath(ctx, n.manager, n.userID, childPath(n.relPath, name)); err != nil {
+	childRel := childPath(n.relPath, name)
+	if err := removePath(ctx, n.manager, n.userID, childRel); err != nil {
 		return errnoFromError(err)
 	}
+	n.inodes.forget(n.userID, childRel)
 	return 0
 }
 
@@ -275,6 +279,7 @@ func (n *workspaceNode) Rename(
 	if err := renamePath(ctx, n.manager, n.userID, oldRel, newRel); err != nil {
 		return errnoFromError(err)
 	}
+	n.inodes.forget(n.userID, oldRel)
 	return 0
 }
 
