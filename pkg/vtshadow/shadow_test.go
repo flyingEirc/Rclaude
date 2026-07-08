@@ -246,6 +246,22 @@ func TestTabStops(t *testing.T) {
 	require.Equal(t, 'a', s.Cell(0, 8).Rune)
 }
 
+func TestWideRuneOneColumnNoWrapDoesNotPanic(t *testing.T) {
+	// Regression: with a one-column terminal and DECAWM off, the wide-rune
+	// clip path computed cols-2 == -1 and paniced indexing the grid.
+	s := New(1, 3)
+	feedString(t, s, "\x1b[?7l中中")
+
+	_, col := s.Cursor()
+	require.Equal(t, 0, col)
+
+	// Same shape with autowrap on stays sane too.
+	s = New(1, 3)
+	feedString(t, s, "中")
+	_, col = s.Cursor()
+	require.Equal(t, 0, col)
+}
+
 func TestDECAWMOff(t *testing.T) {
 	s := New(5, 2)
 	feedString(t, s, "\x1b[?7labcdefg")

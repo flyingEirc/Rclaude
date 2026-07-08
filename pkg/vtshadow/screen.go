@@ -155,14 +155,15 @@ func (s *screen) wrapToNextLine() {
 
 func (s *screen) handleWideAtLastColumn() {
 	// No room for a wide rune in the last column: blank it and wrap (or clip
-	// against the edge when autowrap is off).
+	// against the edge when autowrap is off). Clamp for one-column terminals,
+	// where cols-2 would go negative and index out of range in placeRune.
 	s.setCell(s.cur.row, s.cur.col, Cell{Rune: ' ', Width: 1, SGR: s.pen})
 	if s.autowrap {
 		s.cur.col = 0
 		s.linefeedNoCR()
 		return
 	}
-	s.cur.col = s.cols - 2
+	s.cur.col = clampInt(s.cols-2, 0, s.cols-1)
 }
 
 func (s *screen) placeRune(r rune, w int) {
