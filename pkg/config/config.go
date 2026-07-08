@@ -50,6 +50,7 @@ var (
 	ErrPTYWorkspaceRootNotAbs   = errors.New("config: pty.workspace_root must be absolute")
 	ErrPTYFrameMaxBytesNegative = errors.New("config: pty.frame_max_bytes must be > 0")
 	ErrPTYRateLimitNegative     = errors.New("config: pty.ratelimit values must be >= 0")
+	ErrPTYPredictInvalid        = errors.New("config: pty.predict must be adaptive, always, or off")
 	ErrAuditDriverInvalid       = errors.New("config: audit.driver must be one of sqlite/mysql/postgres")
 	ErrAuditDSNRequired         = errors.New("config: audit.dsn is required when audit.enabled is true")
 	ErrAuditTableInvalid        = errors.New("config: audit.table may only contain letters, digits and underscores")
@@ -144,6 +145,10 @@ type AuditConfig struct {
 
 type DaemonPTYConfig struct {
 	FrameMaxBytes int64 `mapstructure:"frame_max_bytes"`
+	// Predict selects the predictive local-echo mode for the attach client:
+	// "adaptive" (default, show predictions only on slow links), "always",
+	// or "off" (plain passthrough).
+	Predict string `mapstructure:"predict"`
 }
 
 type AuthConfig struct {
@@ -234,10 +239,24 @@ func (c *DaemonConfig) Validate() error {
 	if c.PTY.FrameMaxBytes <= 0 {
 		return ErrPTYFrameMaxBytesNegative
 	}
+	if !isValidPTYPredict(c.PTY.Predict) {
+		return ErrPTYPredictInvalid
+	}
 	if err := c.validateStartup(); err != nil {
 		return err
 	}
 	return c.validateAudit()
+}
+
+// isValidPTYPredict accepts the predictive-echo modes understood by
+// pkg/ptypredict; empty means the adaptive default.
+func isValidPTYPredict(mode string) bool {
+	switch mode {
+	case "", "adaptive", "always", "off":
+		return true
+	default:
+		return false
+	}
 }
 
 func (c *DaemonConfig) validateStartup() error {

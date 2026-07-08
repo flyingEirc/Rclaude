@@ -160,6 +160,40 @@ pty:
 	assert.True(t, errors.Is(err, config.ErrPTYFrameMaxBytesNegative))
 }
 
+func TestLoadDaemonPTYPredictInvalid(t *testing.T) {
+	t.Parallel()
+	body := `
+server:
+  address: "example.com:9000"
+workspace:
+  path: ` + escapeYAML(absWorkspace()) + `
+pty:
+  predict: sometimes
+`
+	path := writeYAML(t, "daemon.yaml", body)
+	_, err := config.LoadDaemon(path)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, config.ErrPTYPredictInvalid))
+}
+
+func TestLoadDaemonPTYPredictModes(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"adaptive", "always", "off"} {
+		body := `
+server:
+  address: "example.com:9000"
+workspace:
+  path: ` + escapeYAML(absWorkspace()) + `
+pty:
+  predict: ` + mode + `
+`
+		path := writeYAML(t, "daemon-"+mode+".yaml", body)
+		cfg, err := config.LoadDaemon(path)
+		require.NoError(t, err, mode)
+		assert.Equal(t, mode, cfg.PTY.Predict)
+	}
+}
+
 func TestLoadDaemonMissingAddress(t *testing.T) {
 	t.Parallel()
 	body := `
