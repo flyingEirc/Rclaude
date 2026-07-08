@@ -80,12 +80,29 @@ $SSH "$SSH_HOST" "sh -s" <<REMOTE
 set -eu
 cd '$REMOTE_DIR'
 chmod +x rclaude-server.new
-mkdir -p '$REMOTE_MOUNT'
-# Stop the previous instance (which holds the running binary) and clear a stale
-# mount, then swap the freshly uploaded binary in by rename (avoids ETXTBSY).
+# Stop the previous instance (it holds the running binary and the FUSE mount).
+# The server traps SIGTERM and unmounts on its own; wait for it to actually exit
+# before swapping the binary (avoids ETXTBSY) and remounting.
 pkill -x rclaude-server 2>/dev/null || true
-fusermount -u '$REMOTE_MOUNT' 2>/dev/null || umount '$REMOTE_MOUNT' 2>/dev/null || true
-sleep 1
+i=0
+while pgrep -x rclaude-server >/dev/null 2>&1; do
+  i=\$((i + 1))
+  if [ "\$i" -ge 10 ]; then
+    echo "  previous rclaude-server still alive after 10s; killing hard" >&2
+    pkill -9 -x rclaude-server 2>/dev/null || true
+    sleep 1
+    break
+  fi
+  sleep 1
+done
+# Safety net for a hard kill/crash that skipped the clean unmount: a leftover FUSE
+# mount goes stale ("Transport endpoint is not connected") and blocks the next
+# start's MkdirAll. A lazy unmount clears even a dead mount.
+if mount | grep -q "on $REMOTE_MOUNT "; then
+  fusermount -u -z '$REMOTE_MOUNT' 2>/dev/null || umount -l '$REMOTE_MOUNT' 2>/dev/null || true
+  sleep 1
+fi
+mkdir -p '$REMOTE_MOUNT'
 mv -f rclaude-server.new rclaude-server
 setsid nohup ./rclaude-server --config '$REMOTE_DIR/$config_name' >'$REMOTE_DIR/server.out' 2>&1 </dev/null &
 sleep 2

@@ -7,6 +7,8 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
@@ -20,7 +22,11 @@ import (
 )
 
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	// Trap SIGTERM as well as SIGINT: pkill/kill/systemd stop all send SIGTERM,
+	// and the shutdown path must run so the deferred FUSE unmount fires. Without
+	// this the process is killed outright, leaving a stale "/workspace" mount
+	// ("Transport endpoint is not connected") that blocks the next startup.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	cmd, err := newRootCommand()
@@ -187,7 +193,7 @@ func serveUntilDone(
 	select {
 	case <-ctx.Done():
 		logger.Info("server shutting down")
-		grpcServer.GracefulStop()
+		stopGRPCServer(logger, grpcServer)
 		err := <-serveErrCh
 		if err == nil || errors.Is(err, grpc.ErrServerStopped) {
 			return nil
@@ -198,6 +204,32 @@ func serveUntilDone(
 			return nil
 		}
 		return fmt.Errorf("server: grpc serve: %w", err)
+	}
+}
+
+// serverShutdownGrace bounds how long a signal-triggered graceful stop waits for
+// in-flight RPCs (notably the long-lived daemon Connect stream) before the server
+// is force-stopped, guaranteeing the deferred FUSE unmount always runs.
+const serverShutdownGrace = 5 * time.Second
+
+// stopGRPCServer tries a graceful stop but falls back to a hard Stop once the
+// grace period elapses, so an open stream cannot block shutdown — and the FUSE
+// unmount — indefinitely.
+func stopGRPCServer(logger logx.Logger, grpcServer *grpc.Server) {
+	stopped := make(chan struct{})
+	go func() {
+		grpcServer.GracefulStop()
+		close(stopped)
+	}()
+
+	timer := time.NewTimer(serverShutdownGrace)
+	defer timer.Stop()
+	select {
+	case <-stopped:
+	case <-timer.C:
+		logger.Warn("graceful stop timed out; forcing stop", "grace", serverShutdownGrace)
+		grpcServer.Stop()
+		<-stopped
 	}
 }
 
