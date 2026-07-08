@@ -36,6 +36,18 @@ const (
 	DefaultAuditQueueSize            = 256
 	DefaultStartupMaxRetries         = 3
 	DefaultStartupRetryDelay         = time.Second
+	// gRPC keepalive：客户端与服务端周期性发 HTTP/2 PING，一是保活路径上的
+	// NAT/防火墙映射（PTY 可长时间空闲，实测 40~60 分钟会被中间设备掐断），
+	// 二是让两端在 Time+Timeout 内探测到死连接并走既有清理路径。
+	// PING 逐跳终止：Caddy 前置 TLS 时，客户端 PING 只到 Caddy，服务端 PING
+	// 只到 Caddy 回源连接；仅明文直连时两端互相探测。详见
+	// docs/reference/grpc-keepalive.md。
+	DefaultGRPCKeepaliveTime    = 30 * time.Second
+	DefaultGRPCKeepaliveTimeout = 10 * time.Second
+	// DefaultGRPCKeepaliveMinTime 是服务端 EnforcementPolicy 允许的客户端
+	// PING 最小间隔，必须小于 DefaultGRPCKeepaliveTime：gRPC 默认值为 5 分钟，
+	// 不放宽的话明文直连部署会把 30s 一次的客户端 PING 判为滥用并 GOAWAY。
+	DefaultGRPCKeepaliveMinTime = 10 * time.Second
 )
 
 var (

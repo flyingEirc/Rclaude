@@ -3,6 +3,7 @@ package ptyattach
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"runtime"
@@ -182,6 +183,8 @@ func TestRunCommandReusesDaemonConfigAndBridgesPTY(t *testing.T) {
 	assert.Equal(t, "example.com:9326", gotAddress)
 	assert.Equal(t, "tok-auth", gotToken)
 	assert.Contains(t, stdout.String(), "remote-ready\n")
+	// 会话结束时必须以终端复位序列收尾，撤销远端透传的终端模式残留。
+	assert.True(t, strings.HasSuffix(stdout.String(), terminalResetSequence))
 	assert.True(t, restoreCalled)
 	assert.False(t, stdin.closed)
 
@@ -192,6 +195,42 @@ func TestRunCommandReusesDaemonConfigAndBridgesPTY(t *testing.T) {
 	assert.Equal(t, uint32(120), frames[0].GetAttach().GetInitialSize().GetCols())
 	assert.Equal(t, uint32(40), frames[0].GetAttach().GetInitialSize().GetRows())
 	assert.Contains(t, sentStdinPayloads(frames), []byte("hello from cli"))
+}
+
+func TestRunCommandDialFailureSkipsTerminalReset(t *testing.T) {
+	var stdout bytes.Buffer
+	restoreCalled := false
+
+	deps := commandDeps{
+		stdin:  io.NopCloser(bytes.NewReader(nil)),
+		stdout: &stdout,
+		loadConfig: func(string) (loadedConfig, error) {
+			return loadedConfig{Address: "example.com:9326", Token: "tok-auth", FrameMax: 64}, nil
+		},
+		terminal: fakeTerminal{
+			tty: true,
+			session: terminalSession{
+				InitialSize: ptyclient.WindowSize{Cols: 80, Rows: 24},
+				Resizes:     closedResizeCh(),
+				Restore: func() error {
+					restoreCalled = true
+					return nil
+				},
+			},
+		},
+		dialPTY: func(context.Context, dialConfig) (ptyclient.Stream, io.Closer, error) {
+			return nil, nil, errors.New("dial failed")
+		},
+		stdinFD:  0,
+		stdoutFD: 1,
+		termName: "xterm-256color",
+	}
+
+	err := runCommand(context.Background(), deps, "daemon.yaml")
+	require.Error(t, err)
+	assert.True(t, restoreCalled)
+	// 会话从未建立，远端不可能污染终端，不应写复位序列。
+	assert.Empty(t, stdout.String())
 }
 
 func TestRunCommandMapsServerErrorToExitStatus(t *testing.T) {
