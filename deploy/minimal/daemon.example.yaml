@@ -32,6 +32,14 @@ log:
 pty:
   # Keep this aligned with server.yaml if you lower the server-side frame cap.
   frame_max_bytes: 65536
+  # 预测本地回显（mosh 式）：可预测按键在本地立即上屏，不等服务器回显，
+  # 键入延迟与网络 RTT 解耦；预测与服务器真实回显持续对账，错了自动回滚，
+  # 服务端不支持（旧版本）时自动退回纯透传。
+  #   adaptive —— 默认。仅在链路较慢时显示预测（SRTT > 60ms 开启，
+  #               更慢时预测字符加下划线提示）；低延迟链路行为与纯透传一致。
+  #   always   —— 无论链路快慢都显示预测（调试/极致手感用）。
+  #   off      —— 完全关闭，恢复纯透传。
+  # predict: "adaptive"
 # 统一入口 `rclaude` 的启动协调策略（事件总线驱动的失败重试）。
 # max_retries：初始尝试之外允许的重试次数（默认 3）；
 # retry_delay：收到重试通知后再次尝试前的等待（默认 1s）。
