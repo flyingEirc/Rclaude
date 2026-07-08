@@ -11,6 +11,10 @@
 #     回源，gRPC 直接失败。
 #   - 不要给这条流设 response_header_timeout 或读写超时：RemotePTY/RemoteFS 都是
 #     常驻双向流，交互式 PTY 可长时间空闲，任何流级超时都会把它掐断。
+#   - 客户端/服务端已启用 gRPC keepalive（HTTP/2 PING，见 docs/reference/
+#     grpc-keepalive.md）。PING 逐跳终止：客户端 PING 到 Caddy 即被应答，作用是
+#     保活 client↔Caddy 段的 NAT/防火墙映射并探测该段死亡；Caddy 本身无需也不应
+#     为此增加任何配置。
 
 {$RCLAUDE_DOMAIN} {
 	reverse_proxy h2c://{$RCLAUDE_UPSTREAM} {

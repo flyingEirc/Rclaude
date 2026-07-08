@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/keepalive"
 
 	remotefsv1 "flyingEirc/Rclaude/api/proto/remotefs/v1"
 	"flyingEirc/Rclaude/pkg/auth"
@@ -166,7 +167,20 @@ func newGRPCServer(
 		return nil, nil, fmt.Errorf("server: listen %q: %w", cfg.Listen, err)
 	}
 	// recovery 拦截器置于最外层，先于 auth 执行，以兜住整条 handler 同步栈的 panic。
+	// keepalive：服务端主动 PING 对端，死连接在 Time+Timeout 内触发 stream 报错，
+	// 走既有 shutdown/UnregisterPTY 清理路径，避免 activePTY 泄漏卡死重连。
+	// Caddy 前置时对端是回源连接（通常 loopback），探测客户端主要靠明文直连模式。
+	// EnforcementPolicy 必须放宽到 MinTime < 客户端 Time（gRPC 默认 5 分钟会把
+	// 30s 一次的客户端 PING 判为滥用并 GOAWAY），配对约束见 pkg/config。
 	grpcServer := grpc.NewServer(
+		grpc.KeepaliveParams(keepalive.ServerParameters{
+			Time:    config.DefaultGRPCKeepaliveTime,
+			Timeout: config.DefaultGRPCKeepaliveTimeout,
+		}),
+		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+			MinTime:             config.DefaultGRPCKeepaliveMinTime,
+			PermitWithoutStream: true,
+		}),
 		grpc.ChainStreamInterceptor(
 			recoveryStreamInterceptor(logger),
 			auth.StreamServerInterceptor(verifier),

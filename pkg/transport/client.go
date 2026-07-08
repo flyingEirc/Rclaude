@@ -12,9 +12,11 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/keepalive"
 
 	remotefsv1 "flyingEirc/Rclaude/api/proto/remotefs/v1"
 	"flyingEirc/Rclaude/pkg/auth"
+	"flyingEirc/Rclaude/pkg/config"
 )
 
 // 错误集合：调用方应使用 errors.Is 比较。
@@ -63,8 +65,17 @@ func Dial(_ context.Context, opts DialOptions) (*grpc.ClientConn, error) {
 	if err != nil {
 		return nil, err
 	}
+	// keepalive 让空闲的 daemon/PTY 长连接持续产生链路流量：既防止 NAT/防火墙
+	// 回收空闲映射，也在 Time+Timeout 内探测到死路径让 RPC 尽快报错退出。
+	// Caddy 前置 TLS 时 PING 终止于 Caddy，保活与探测覆盖的是 client↔Caddy 段，
+	// 这正是空闲掐断的发生段；服务端对应参数见 app/server/main.go。
 	dialOpts := []grpc.DialOption{
 		grpc.WithTransportCredentials(creds),
+		grpc.WithKeepaliveParams(keepalive.ClientParameters{
+			Time:                config.DefaultGRPCKeepaliveTime,
+			Timeout:             config.DefaultGRPCKeepaliveTimeout,
+			PermitWithoutStream: true,
+		}),
 	}
 	if opts.Dialer != nil {
 		dialOpts = append(dialOpts, grpc.WithContextDialer(opts.Dialer))

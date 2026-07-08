@@ -557,3 +557,12 @@ func escapeYAML(p string) string {
 	out = append(out, '"')
 	return string(out)
 }
+
+func TestGRPCKeepaliveDefaultsPairing(t *testing.T) {
+	// 服务端 EnforcementPolicy.MinTime 必须小于客户端 PING 间隔，否则明文直连
+	// 部署下服务端会把客户端 keepalive 判为滥用并 GOAWAY。
+	assert.Less(t, config.DefaultGRPCKeepaliveMinTime, config.DefaultGRPCKeepaliveTime)
+	// grpc-go 会把小于 10s 的客户端 keepalive Time 强制钳到 10s，
+	// 常量低于该值会造成"配置与实际行为不一致"。
+	assert.GreaterOrEqual(t, config.DefaultGRPCKeepaliveTime, 10*time.Second)
+}

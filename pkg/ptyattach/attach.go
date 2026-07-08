@@ -23,6 +23,24 @@ import (
 
 const defaultTerm = "xterm-256color"
 
+// terminalResetSequence 撤销远端程序可能透传给本地终端仿真器、而断开时来不及
+// 自行恢复的模式。透传架构下本地不解析字节流（区别于 mosh 的终端仿真方案，
+// 见 docs/reference/mosh.md），只能在会话结束时保守复位；不支持某序列的终端
+// 会按未知 CSI 忽略。实测残留案例：kitty keyboard protocol 未弹栈导致每次按键
+// 回显 "9;1:3u" 之类的 release 事件残片。
+const terminalResetSequence = "\x1b[<u\x1b[<u\x1b[<u" + // kitty 键盘协议：弹栈（多推少弹为空操作）
+	"\x1b[=0;1u" + // kitty 键盘协议：当前层标志清零兜底
+	"\x1b[>4;0m" + // xterm modifyOtherKeys 关闭
+	"\x1b[?1049l" + // 退出 alternate screen
+	"\x1b[?2004l" + // bracketed paste 关闭
+	"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l" + // 鼠标上报及 SGR 编码关闭
+	"\x1b[?1004l" + // focus 上报关闭
+	"\x1b[?1l\x1b>" + // 光标键/小键盘回到普通模式
+	"\x1b[?7h" + // 自动换行恢复
+	"\x1b[0m" + // SGR 属性清零
+	"\x1b[0 q" + // 光标形状恢复默认
+	"\x1b[?25h" // 光标恢复可见
+
 var (
 	errTTYRequired      = errors.New("ptyattach: stdin and stdout must both be interactive terminals")
 	errEmptyServerToken = errors.New("ptyattach: daemon config must include server.token")
@@ -93,6 +111,7 @@ type commandRuntime struct {
 	stream      ptyclient.Stream
 	closer      io.Closer
 	stdin       io.ReadCloser
+	stdout      io.Writer
 	stopBridge  func()
 	frameMax    int
 	predictor   ptyclient.Predictor
@@ -184,6 +203,7 @@ func prepareCommandRuntime(ctx context.Context, deps commandDeps, cfg loadedConf
 		stream:      stream,
 		closer:      closer,
 		stdin:       stdin,
+		stdout:      deps.stdout,
 		stopBridge:  stopBridge,
 		frameMax:    clientFrameMax(int64(cfg.FrameMax)),
 		predictor:   newPredictor(cfg.Predict, deps.stdout, termSession.InitialSize),
@@ -218,8 +238,20 @@ func closeCommandRuntime(runErr *error, runtime commandRuntime) {
 			*runErr = closeErr
 		}
 	}
+	// 会话建立后的所有结束路径（含远端异常断开）都要复位终端仿真器，
+	// 写失败只能放弃（终端多半已不可写），仍继续恢复 termios。
+	writeTerminalReset(runtime.stdout)
 	if restoreErr := runtime.termSession.Restore(); restoreErr != nil && runErr != nil && *runErr == nil {
 		*runErr = fmt.Errorf("ptyattach: restore terminal: %w", restoreErr)
+	}
+}
+
+func writeTerminalReset(out io.Writer) {
+	if out == nil {
+		return
+	}
+	if _, err := io.WriteString(out, terminalResetSequence); err != nil {
+		return
 	}
 }
 
