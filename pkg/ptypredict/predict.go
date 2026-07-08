@@ -13,12 +13,12 @@ func (e *Engine) predictedCursor() (row, col int) {
 	return e.shadow.Cursor()
 }
 
-// mayPredict gates new predictions: never on the alternate screen, never
-// while quenched after suspicious output.
+// mayPredict gates new predictions: only quenching after suspicious output
+// blocks them. The alternate screen is NOT gated — Claude Code (the primary
+// target app) runs entirely on it with the hardware cursor at the input
+// caret, and mosh itself predicts everywhere, relying on epoch/cull to keep
+// non-echoing full-screen apps dark.
 func (e *Engine) mayPredict() bool {
-	if e.shadow.AltScreen() {
-		return false
-	}
 	return e.quenchUntil.IsZero() || e.now().After(e.quenchUntil)
 }
 

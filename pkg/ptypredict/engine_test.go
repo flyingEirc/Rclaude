@@ -242,15 +242,29 @@ func TestBulkPasteResetsPredictions(t *testing.T) {
 	require.Empty(t, h.engine.cells, "bulk paste is never predicted")
 }
 
-func TestAltScreenSuppressesPredictions(t *testing.T) {
+// TestAltScreenPredictsLikeClaudeCode replays the echo shape captured from a
+// real Claude Code session: alt screen active, hardware cursor at the input
+// caret, absolute-addressed partial redraw. Predictions must work there.
+func TestAltScreenPredictsLikeClaudeCode(t *testing.T) {
 	h := newHarness(t, ModeAlways)
-	h.prime(200 * time.Millisecond)
+	// Claude-style startup: enter alt screen, draw prompt, park cursor at
+	// the caret (row 4, col 2 after "❯ ").
+	h.server("\x1b[?1049h\x1b[2J\x1b[5;1H❯ ")
 
-	h.server("\x1b[?1049h")
+	h.typeKeys("a") // first epoch: tentative, dark
+	// Claude echoes with an absolute partial redraw, cursor back to caret+1.
+	h.server("\x1b[?25l\x1b[H\r\x1b[2C\x1b[4Ba\x1b[K\x1b[5;4H\x1b[?25h")
+	h.ack(200 * time.Millisecond)
+	require.Empty(t, h.engine.cells, "first prediction confirmed and retired")
+
 	before := h.real.log.Len()
-	h.typeKeys("i")
-	require.Equal(t, before, h.real.log.Len(), "no predictions on the alternate screen")
-	require.Empty(t, h.engine.cells)
+	h.typeKeys("b")
+	require.Greater(t, h.real.log.Len(), before, "confirmed epoch paints instantly on the alt screen")
+	require.Equal(t, 'b', h.real.screen.Cell(4, 3).Rune)
+
+	h.server("\x1b[?25l\x1b[H\r\x1b[2C\x1b[4B\x1b[1Cb\x1b[K\x1b[5;5H\x1b[?25h")
+	h.ack(200 * time.Millisecond)
+	h.converged()
 }
 
 func TestWideRunesAreNotPredicted(t *testing.T) {

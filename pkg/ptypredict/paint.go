@@ -32,7 +32,7 @@ func (e *Engine) flushPaint(buf []byte) error {
 
 // paintTarget selects the predictions that should be visible right now.
 func (e *Engine) paintTarget() ([]cellPrediction, bool) {
-	if !e.displayGate() || !e.shadow.AtGround() || e.shadow.AltScreen() {
+	if !e.displayGate() || !e.shadow.AtGround() {
 		return nil, false
 	}
 	target := make([]cellPrediction, 0, len(e.cells))
