@@ -103,7 +103,7 @@ func TestAttach_HappyPathForwardsIOAndExit(t *testing.T) {
 	assert.True(t, host.shutdownCalled)
 }
 
-func TestAttach_PassesConfiguredArgsToSpawner(t *testing.T) {
+func TestAttach_SpawnsDeclaredAgentWithoutArgs(t *testing.T) {
 	t.Parallel()
 
 	stream := newFakeStream(auth.WithUserID(context.Background(), "alice"))
@@ -117,35 +117,46 @@ func TestAttach_PassesConfiguredArgsToSpawner(t *testing.T) {
 		t,
 		fakeRegistry{daemonOnline: true},
 		withSpawner(spawner),
-		withArgs([]string{"--model", "sonnet"}),
 	)
 	require.NoError(t, svc.Attach(stream))
 
 	require.NotNil(t, spawner.req)
-	assert.Equal(t, []string{"--model", "sonnet"}, spawner.req.Args)
+	assert.Equal(t, testAgent(), spawner.req.Binary, "spawn must run the attach-declared agent")
+	assert.Empty(t, spawner.req.Args, "the client never controls argv")
 }
 
-func TestAttach_DefaultsToLoginShellWhenBinaryUnset(t *testing.T) {
+func TestAttach_MissingAgentReturnsSpawnFailed(t *testing.T) {
 	t.Parallel()
 
-	if runtime.GOOS == "windows" {
-		t.Skip("login-shell passthrough targets unix hosts")
-	}
-
 	stream := newFakeStream(auth.WithUserID(context.Background(), "alice"))
-	stream.pushClient(attachFrame())
-	stream.pushClient(&remotefsv1.ClientFrame{
-		Payload: &remotefsv1.ClientFrame_Detach{Detach: &remotefsv1.Detach{}},
-	})
+	stream.pushClient(attachFrameWithAgent(""))
 
-	spawner := &capturingSpawner{host: newFakeHost()}
-	svc := newService(t, fakeRegistry{daemonOnline: true}, withSpawner(spawner), withBinary(""))
+	svc := newService(t, fakeRegistry{daemonOnline: true})
 	require.NoError(t, svc.Attach(stream))
 
-	require.NotNil(t, spawner.req)
-	assert.True(t, filepath.IsAbs(spawner.req.Binary),
-		"login shell must resolve to an absolute path, got %q", spawner.req.Binary)
-	assert.Equal(t, []string{"-l"}, spawner.req.Args, "unset binary must spawn a login shell")
+	frames := stream.serverFrames()
+	require.Len(t, frames, 1)
+	errFrame := frames[0].GetError()
+	require.NotNil(t, errFrame)
+	assert.Equal(t, remotefsv1.Error_KIND_SPAWN_FAILED, errFrame.GetKind())
+	assert.Contains(t, errFrame.GetMessage(), "agent")
+}
+
+func TestAttach_RelativeAgentPathReturnsSpawnFailed(t *testing.T) {
+	t.Parallel()
+
+	stream := newFakeStream(auth.WithUserID(context.Background(), "alice"))
+	stream.pushClient(attachFrameWithAgent("bin/../bin/sh"))
+
+	svc := newService(t, fakeRegistry{daemonOnline: true})
+	require.NoError(t, svc.Attach(stream))
+
+	frames := stream.serverFrames()
+	require.Len(t, frames, 1)
+	errFrame := frames[0].GetError()
+	require.NotNil(t, errFrame)
+	assert.Equal(t, remotefsv1.Error_KIND_SPAWN_FAILED, errFrame.GetKind())
+	assert.Contains(t, errFrame.GetMessage(), "bare program name or an absolute path")
 }
 
 func TestAttach_TooLargeStdinTriggersProtocolError(t *testing.T) {
@@ -217,17 +228,13 @@ func TestAttach_StdinRateLimitedReturnsApplicationError(t *testing.T) {
 	assert.Empty(t, host.stdin.String())
 }
 
-func TestAttach_SpawnFailureIncludesConfiguredBinary(t *testing.T) {
+func TestAttach_SpawnFailureIncludesDeclaredAgent(t *testing.T) {
 	t.Parallel()
 
 	stream := newFakeStream(auth.WithUserID(context.Background(), "alice"))
-	stream.pushClient(attachFrame())
+	stream.pushClient(attachFrameWithAgent("definitely-not-a-real-binary-zzz"))
 
-	svc := newService(
-		t,
-		fakeRegistry{daemonOnline: true},
-		withBinary("definitely-not-a-real-binary-zzz"),
-	)
+	svc := newService(t, fakeRegistry{daemonOnline: true})
 	require.NoError(t, svc.Attach(stream))
 
 	frames := stream.serverFrames()
@@ -235,7 +242,7 @@ func TestAttach_SpawnFailureIncludesConfiguredBinary(t *testing.T) {
 	errFrame := frames[0].GetError()
 	require.NotNil(t, errFrame)
 	assert.Equal(t, remotefsv1.Error_KIND_SPAWN_FAILED, errFrame.GetKind())
-	assert.Contains(t, errFrame.GetMessage(), `resolve pty binary "definitely-not-a-real-binary-zzz"`)
+	assert.Contains(t, errFrame.GetMessage(), `resolve agent "definitely-not-a-real-binary-zzz"`)
 }
 
 func TestAttach_LogsSpawnFailureWithContext(t *testing.T) {
@@ -245,12 +252,11 @@ func TestAttach_LogsSpawnFailureWithContext(t *testing.T) {
 	logger := newTestLogger(t, &logs)
 
 	stream := newFakeStream(auth.WithUserID(context.Background(), "alice"))
-	stream.pushClient(attachFrame())
+	stream.pushClient(attachFrameWithAgent("definitely-not-a-real-binary-zzz"))
 
 	svc := newService(
 		t,
 		fakeRegistry{daemonOnline: true},
-		withBinary("definitely-not-a-real-binary-zzz"),
 		withLogger(logger),
 	)
 	require.NoError(t, svc.Attach(stream))
@@ -259,7 +265,7 @@ func TestAttach_LogsSpawnFailureWithContext(t *testing.T) {
 	assert.Contains(t, got, "pty attach requested")
 	assert.Contains(t, got, "pty spawn failed")
 	assert.Contains(t, got, `"user_id": "alice"`)
-	assert.Contains(t, got, `"binary": "definitely-not-a-real-binary-zzz"`)
+	assert.Contains(t, got, `"agent": "definitely-not-a-real-binary-zzz"`)
 	assert.NotContains(t, got, "token")
 }
 
@@ -280,7 +286,6 @@ func TestAttach_HappyPathLogsLifecycle(t *testing.T) {
 		t,
 		fakeRegistry{daemonOnline: true, sessionID: "pty-1"},
 		withSpawner(fakeSpawner{host: host}),
-		withArgs([]string{"--model", "sonnet"}),
 		withLogger(logger),
 	)
 	require.NoError(t, svc.Attach(stream))
@@ -292,7 +297,7 @@ func TestAttach_HappyPathLogsLifecycle(t *testing.T) {
 	assert.Contains(t, got, "pty exited")
 	assert.Contains(t, got, `"user_id": "alice"`)
 	assert.Contains(t, got, `"session_id": "pty-1"`)
-	assert.Contains(t, got, `"args_count": 2`)
+	assert.Contains(t, got, `"agent": `)
 	assert.Contains(t, got, `"code": 0`)
 	assert.NotContains(t, got, "token")
 }
@@ -303,7 +308,6 @@ func newService(t *testing.T, registry ptyservice.Registry, opts ...serviceOptio
 	cfg := ptyservice.Config{
 		Registry:     registry,
 		Spawner:      fakeSpawner{host: newFakeHost()},
-		Binary:       testBinary(t),
 		Workspace:    testWorkspaceRoot(),
 		EnvWhitelist: append([]string(nil), config.DefaultPTYEnvPassthrough...),
 		FrameMax:     64,
@@ -331,18 +335,6 @@ func withFrameMax(n int64) serviceOption {
 	}
 }
 
-func withArgs(args []string) serviceOption {
-	return func(cfg *ptyservice.Config) {
-		cfg.Args = args
-	}
-}
-
-func withBinary(binary string) serviceOption {
-	return func(cfg *ptyservice.Config) {
-		cfg.Binary = binary
-	}
-}
-
 func withLogger(logger logx.Logger) serviceOption {
 	return func(cfg *ptyservice.Config) {
 		cfg.Logger = logger
@@ -362,20 +354,28 @@ func withInputLimit(limiter ptyservice.InputLimiter) serviceOption {
 }
 
 func attachFrame() *remotefsv1.ClientFrame {
+	return attachFrameWithAgent(testAgent())
+}
+
+func attachFrameWithAgent(agent string) *remotefsv1.ClientFrame {
 	return &remotefsv1.ClientFrame{
 		Payload: &remotefsv1.ClientFrame_Attach{
 			Attach: &remotefsv1.AttachReq{
 				InitialSize: &remotefsv1.Resize{Cols: 80, Rows: 24},
 				Term:        "xterm-256color",
+				Agent:       agent,
 			},
 		},
 	}
 }
 
-func testBinary(t *testing.T) string {
-	t.Helper()
+// testAgent returns this test binary's absolute path: an attach agent that
+// always resolves on the server side without touching PATH.
+func testAgent() string {
 	path, err := os.Executable()
-	require.NoError(t, err)
+	if err != nil {
+		panic(err)
+	}
 	return path
 }
 
@@ -392,8 +392,11 @@ type fakeRegistry struct {
 	busy         bool
 }
 
-func (r fakeRegistry) LookupDaemon(_ string) bool {
-	return r.daemonOnline
+func (r fakeRegistry) LookupDaemon(_ string) (string, bool) {
+	if !r.daemonOnline {
+		return "", false
+	}
+	return "proj", true
 }
 
 func (r fakeRegistry) RegisterPTY(_ string) (string, bool, error) {
@@ -415,8 +418,11 @@ type trackingRegistry struct {
 	unregistered []string
 }
 
-func (r *trackingRegistry) LookupDaemon(_ string) bool {
-	return r.daemonOnline
+func (r *trackingRegistry) LookupDaemon(_ string) (string, bool) {
+	if !r.daemonOnline {
+		return "", false
+	}
+	return "proj", true
 }
 
 func (r *trackingRegistry) RegisterPTY(_ string) (string, bool, error) {

@@ -162,7 +162,7 @@ func TestReadChunkChangeInvalidatesCache(t *testing.T) {
 
 	require.NoError(t, current.Bootstrap(&remotefsv1.DaemonMessage{
 		Msg: &remotefsv1.DaemonMessage_FileTree{
-			FileTree: &remotefsv1.FileTree{Files: []*remotefsv1.FileInfo{
+			FileTree: &remotefsv1.FileTree{WorkspaceName: "proj", Files: []*remotefsv1.FileInfo{
 				{Path: "file.txt", Size: 6, ModTime: 2, Mode: 0o644},
 			}},
 		},
@@ -641,7 +641,7 @@ func startViewSessionWithManagerOptions(
 	current := manager.NewSession("user-1")
 	require.NoError(t, current.Bootstrap(&remotefsv1.DaemonMessage{
 		Msg: &remotefsv1.DaemonMessage_FileTree{
-			FileTree: &remotefsv1.FileTree{Files: files},
+			FileTree: &remotefsv1.FileTree{WorkspaceName: "proj", Files: files},
 		},
 	}))
 	_, err := manager.Register(current)

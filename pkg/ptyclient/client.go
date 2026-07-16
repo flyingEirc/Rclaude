@@ -7,26 +7,23 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"time"
 
 	"golang.org/x/sync/errgroup"
 
 	remotefsv1 "flyingEirc/Rclaude/api/proto/remotefs/v1"
 )
 
-const (
-	defaultStdinChunk     = 64 * 1024
-	predictorTickInterval = 50 * time.Millisecond
-)
+const defaultStdinChunk = 64 * 1024
 
 // AttachParams populate the first attach frame sent on the stream.
 type AttachParams struct {
 	SessionID   string
 	InitialSize WindowSize
 	Term        string
-	// PredictiveEcho asks the server to emit EchoAck frames for client-side
-	// predictive echo reconciliation.
-	PredictiveEcho bool
+	// Agent is the program the remote session runs, as declared on the
+	// rclaude command line (-g/--agent): a bare name resolved via the
+	// server's PATH or an absolute path on the server.
+	Agent string
 }
 
 // Config wires the client loop to its IO and transport collaborators.
@@ -40,10 +37,6 @@ type Config struct {
 	// OnAttached, if non-nil, runs once after the attach handshake succeeds
 	// (first server frame is Attached), before the IO pumps start.
 	OnAttached func()
-	// Predictor, if non-nil, provides mosh-style predictive local echo. It is
-	// disabled automatically when the server does not confirm EchoAck support
-	// in the Attached frame.
-	Predictor Predictor
 }
 
 // Client is a one-shot PTY bridge. Use New + Run; do not reuse.
@@ -106,11 +99,6 @@ func (c *Client) Run(ctx context.Context) ExitResult {
 		c.shutdownBackground(cancel, g)
 		return ExitResult{Err: ErrFirstFrameNotAttached}
 	}
-	if !attached.GetEchoAck() {
-		// Older server without the echo-ack watermark: predictions could
-		// never be reconciled, fall back to plain passthrough.
-		c.cfg.Predictor = nil
-	}
 	if c.cfg.OnAttached != nil {
 		c.cfg.OnAttached()
 	}
@@ -122,12 +110,6 @@ func (c *Client) Run(ctx context.Context) ExitResult {
 	g.Go(func() error {
 		return c.resizePump(gctx, outbound)
 	})
-
-	if c.cfg.Predictor != nil {
-		g.Go(func() error {
-			return c.predictorTickLoop(gctx)
-		})
-	}
 
 	result := &ExitResult{}
 	g.Go(func() error {
@@ -166,7 +148,6 @@ func (c *Client) sendLoop(ctx context.Context, outbound <-chan sendRequest) erro
 func (c *Client) stdinPump(ctx context.Context, outbound chan<- sendRequest) error {
 	reader := bufio.NewReaderSize(c.cfg.Stdin, c.cfg.FrameMax)
 	buf := make([]byte, c.cfg.FrameMax)
-	var sentOffset uint64
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -174,34 +155,11 @@ func (c *Client) stdinPump(ctx context.Context, outbound chan<- sendRequest) err
 		}
 
 		n, readErr := reader.Read(buf)
-		if n > 0 && c.cfg.Predictor != nil {
-			sentOffset += uint64(n)
-			if err := c.cfg.Predictor.OnStdin(buf[:n], sentOffset); err != nil {
-				return err
-			}
-		}
 		if err := c.forwardStdinChunk(ctx, outbound, buf[:n]); err != nil {
 			return err
 		}
 		if readErr != nil {
 			return normalizeReadErr(readErr)
-		}
-	}
-}
-
-// predictorTickLoop drives time-based predictor transitions (glitch display
-// escalation) while the session runs.
-func (c *Client) predictorTickLoop(ctx context.Context) error {
-	ticker := time.NewTicker(predictorTickInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-ticker.C:
-			if err := c.cfg.Predictor.Tick(); err != nil {
-				return err
-			}
 		}
 	}
 }
@@ -219,9 +177,6 @@ func (c *Client) resizePump(ctx context.Context, outbound chan<- sendRequest) er
 		case ws, ok := <-c.cfg.Resizes:
 			if !ok {
 				return nil
-			}
-			if c.cfg.Predictor != nil {
-				c.cfg.Predictor.OnResize(int(ws.Cols), int(ws.Rows))
 			}
 			if err := enqueue(ctx, outbound, &remotefsv1.ClientFrame{
 				Payload: &remotefsv1.ClientFrame_Resize{Resize: toProtoSize(ws)},
@@ -262,10 +217,10 @@ func attachFrame(params AttachParams) *remotefsv1.ClientFrame {
 	return &remotefsv1.ClientFrame{
 		Payload: &remotefsv1.ClientFrame_Attach{
 			Attach: &remotefsv1.AttachReq{
-				SessionId:      params.SessionID,
-				InitialSize:    toProtoSize(params.InitialSize),
-				Term:           params.Term,
-				PredictiveEcho: params.PredictiveEcho,
+				SessionId:   params.SessionID,
+				InitialSize: toProtoSize(params.InitialSize),
+				Term:        params.Term,
+				Agent:       params.Agent,
 			},
 		},
 	}
@@ -325,16 +280,8 @@ func (c *Client) recvLoop(ctx context.Context, cancel context.CancelFunc, result
 func (c *Client) handleServerFrame(frame *remotefsv1.ServerFrame, result *ExitResult) (bool, error) {
 	switch payload := frame.GetPayload().(type) {
 	case *remotefsv1.ServerFrame_Stdout:
-		if c.cfg.Predictor != nil {
-			return false, c.cfg.Predictor.OnServerOutput(payload.Stdout)
-		}
 		_, err := c.cfg.Stdout.Write(payload.Stdout)
 		return false, err
-	case *remotefsv1.ServerFrame_EchoAck:
-		if c.cfg.Predictor != nil {
-			return false, c.cfg.Predictor.OnEchoAck(payload.EchoAck.GetOffset())
-		}
-		return false, nil
 	case *remotefsv1.ServerFrame_Exited:
 		result.Code = payload.Exited.GetCode()
 		result.Signal = payload.Exited.GetSignal()

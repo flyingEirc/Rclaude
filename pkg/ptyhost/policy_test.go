@@ -11,18 +11,36 @@ import (
 	"flyingEirc/Rclaude/pkg/ptyhost"
 )
 
-func TestResolveCwd_BasicUserScope(t *testing.T) {
+func TestResolveCwd_UserAndWorkspaceScope(t *testing.T) {
 	t.Parallel()
 
-	got, err := ptyhost.ResolveCwd(absWorkspaceRoot(), "alice")
+	got, err := ptyhost.ResolveCwd(absWorkspaceRoot(), "alice", "proj")
 	require.NoError(t, err)
-	assert.Equal(t, filepath.Join(absWorkspaceRoot(), "alice"), got)
+	assert.Equal(t, filepath.Join(absWorkspaceRoot(), "alice", "proj"), got)
+}
+
+func TestResolveCwd_AllowsUnicodeWorkspaceName(t *testing.T) {
+	t.Parallel()
+
+	got, err := ptyhost.ResolveCwd(absWorkspaceRoot(), "alice", "项目A")
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(absWorkspaceRoot(), "alice", "项目A"), got)
+}
+
+func TestResolveCwd_RejectsUnsafeWorkspaceName(t *testing.T) {
+	t.Parallel()
+
+	for _, workspace := range []string{"", "..", "a/b", `a\b`, "a\x00b", ".", "../etc"} {
+		_, err := ptyhost.ResolveCwd(absWorkspaceRoot(), "alice", workspace)
+		require.Error(t, err, "workspace %q", workspace)
+		assert.ErrorIs(t, err, ptyhost.ErrUnsafeWorkspace, "workspace %q", workspace)
+	}
 }
 
 func TestResolveCwd_RejectsTraversalUserID(t *testing.T) {
 	t.Parallel()
 
-	_, err := ptyhost.ResolveCwd(absWorkspaceRoot(), "../etc")
+	_, err := ptyhost.ResolveCwd(absWorkspaceRoot(), "../etc", "proj")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ptyhost.ErrUnsafeUserID)
 }
@@ -30,7 +48,7 @@ func TestResolveCwd_RejectsTraversalUserID(t *testing.T) {
 func TestResolveCwd_RejectsNestedUserID(t *testing.T) {
 	t.Parallel()
 
-	_, err := ptyhost.ResolveCwd(absWorkspaceRoot(), "alice/bob")
+	_, err := ptyhost.ResolveCwd(absWorkspaceRoot(), "alice/bob", "proj")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ptyhost.ErrUnsafeUserID)
 }
@@ -44,7 +62,7 @@ func TestResolveCwd_RejectsNormalizedTraversalUserID(t *testing.T) {
 	}
 
 	for _, userID := range testCases {
-		_, err := ptyhost.ResolveCwd(absWorkspaceRoot(), userID)
+		_, err := ptyhost.ResolveCwd(absWorkspaceRoot(), userID, "proj")
 		require.Error(t, err)
 		assert.ErrorIs(t, err, ptyhost.ErrUnsafeUserID)
 	}
@@ -53,11 +71,11 @@ func TestResolveCwd_RejectsNormalizedTraversalUserID(t *testing.T) {
 func TestResolveCwd_RejectsEmpty(t *testing.T) {
 	t.Parallel()
 
-	_, err := ptyhost.ResolveCwd(absWorkspaceRoot(), "")
+	_, err := ptyhost.ResolveCwd(absWorkspaceRoot(), "", "proj")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ptyhost.ErrUnsafeUserID)
 
-	_, err = ptyhost.ResolveCwd("", "alice")
+	_, err = ptyhost.ResolveCwd("", "alice", "proj")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ptyhost.ErrWorkspaceRootNotAbs)
 }
@@ -65,7 +83,7 @@ func TestResolveCwd_RejectsEmpty(t *testing.T) {
 func TestResolveCwd_RejectsRelativeRoot(t *testing.T) {
 	t.Parallel()
 
-	_, err := ptyhost.ResolveCwd("workspace", "alice")
+	_, err := ptyhost.ResolveCwd("workspace", "alice", "proj")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ptyhost.ErrWorkspaceRootNotAbs)
 }
@@ -163,17 +181,16 @@ func TestResolveBinary_RejectsEmpty(t *testing.T) {
 	assert.ErrorIs(t, err, ptyhost.ErrBinaryEmpty)
 }
 
-func TestLoginShell_ResolvesInteractiveLoginShell(t *testing.T) {
+// Relative paths with separators must never reach LookPath: the name arrives
+// over the wire and LookPath would resolve it against the server process cwd.
+func TestResolveBinary_RejectsRelativePathWithSeparators(t *testing.T) {
 	t.Parallel()
 
-	if runtime.GOOS == "windows" {
-		t.Skip("login-shell passthrough targets unix hosts")
+	for _, name := range []string{"bin/sh", "../bin/sh", `bin\sh`, "./sh"} {
+		_, err := ptyhost.ResolveBinary(name)
+		require.Error(t, err, name)
+		assert.ErrorIs(t, err, ptyhost.ErrBinaryUnsafe, name)
 	}
-
-	shell, args, err := ptyhost.LoginShell()
-	require.NoError(t, err)
-	assert.True(t, filepath.IsAbs(shell), "expected absolute shell path, got %q", shell)
-	assert.Equal(t, []string{"-l"}, args)
 }
 
 func absWorkspaceRoot() string {

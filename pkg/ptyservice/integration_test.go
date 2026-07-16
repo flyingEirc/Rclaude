@@ -36,11 +36,12 @@ func TestAttach_IntegrationHappyPath(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, first.GetAttached())
 	assert.Equal(t, "alice-pty-1", first.GetAttached().GetSessionId())
-	assert.Equal(t, filepath.Join(harness.WorkspaceRoot, harness.UserID), first.GetAttached().GetCwd())
+	assert.Empty(t, first.GetAttached().GetCwd(), "remote workspace path must not be disclosed to the client")
 
 	requests := spawner.Requests()
 	require.Len(t, requests, 1)
-	assert.Equal(t, filepath.Join(harness.WorkspaceRoot, harness.UserID), requests[0].Cwd)
+	assert.Equal(t, filepath.Join(harness.WorkspaceRoot, harness.UserID, harness.WorkspaceName), requests[0].Cwd,
+		"PTY cwd must be pinned to /workspace/{userid}/{project}")
 	assert.Equal(t, ptyhost.WindowSize{Cols: 80, Rows: 24}, requests[0].InitSize)
 	assert.Contains(t, requests[0].Env, "TERM=xterm-256color")
 

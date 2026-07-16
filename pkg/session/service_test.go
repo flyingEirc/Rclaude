@@ -45,6 +45,7 @@ func TestServiceConnectRegistersAndRemovesSession(t *testing.T) {
 	stream.PushRecv(&remotefsv1.DaemonMessage{
 		Msg: &remotefsv1.DaemonMessage_FileTree{
 			FileTree: &remotefsv1.FileTree{
+				WorkspaceName: "proj",
 				Files: []*remotefsv1.FileInfo{
 					{Path: "dir", IsDir: true, Mode: 0o755},
 				},
@@ -114,7 +115,7 @@ func TestServiceConnectReplacesPreviousSession(t *testing.T) {
 		errCh1 <- svc.Connect(stream1)
 	}()
 	stream1.PushRecv(&remotefsv1.DaemonMessage{
-		Msg: &remotefsv1.DaemonMessage_FileTree{FileTree: &remotefsv1.FileTree{}},
+		Msg: &remotefsv1.DaemonMessage_FileTree{FileTree: &remotefsv1.FileTree{WorkspaceName: "proj"}},
 	})
 	require.Eventually(t, func() bool {
 		_, ok := manager.Get("user-1")
@@ -131,7 +132,7 @@ func TestServiceConnectReplacesPreviousSession(t *testing.T) {
 		errCh2 <- svc.Connect(stream2)
 	}()
 	stream2.PushRecv(&remotefsv1.DaemonMessage{
-		Msg: &remotefsv1.DaemonMessage_FileTree{FileTree: &remotefsv1.FileTree{}},
+		Msg: &remotefsv1.DaemonMessage_FileTree{FileTree: &remotefsv1.FileTree{WorkspaceName: "proj"}},
 	})
 
 	require.Eventually(t, func() bool {
@@ -168,7 +169,7 @@ func TestServiceConnectRetainsOfflineReadonlyWithinTTL(t *testing.T) {
 	}()
 
 	stream.PushRecv(&remotefsv1.DaemonMessage{
-		Msg: &remotefsv1.DaemonMessage_FileTree{FileTree: &remotefsv1.FileTree{}},
+		Msg: &remotefsv1.DaemonMessage_FileTree{FileTree: &remotefsv1.FileTree{WorkspaceName: "proj"}},
 	})
 
 	require.Eventually(t, func() bool {
@@ -202,7 +203,7 @@ func TestServiceConnectReplacesOfflineReadonlySession(t *testing.T) {
 		errCh1 <- svc.Connect(stream1)
 	}()
 	stream1.PushRecv(&remotefsv1.DaemonMessage{
-		Msg: &remotefsv1.DaemonMessage_FileTree{FileTree: &remotefsv1.FileTree{}},
+		Msg: &remotefsv1.DaemonMessage_FileTree{FileTree: &remotefsv1.FileTree{WorkspaceName: "proj"}},
 	})
 
 	require.Eventually(t, func() bool {
@@ -228,7 +229,7 @@ func TestServiceConnectReplacesOfflineReadonlySession(t *testing.T) {
 		errCh2 <- svc.Connect(stream2)
 	}()
 	stream2.PushRecv(&remotefsv1.DaemonMessage{
-		Msg: &remotefsv1.DaemonMessage_FileTree{FileTree: &remotefsv1.FileTree{}},
+		Msg: &remotefsv1.DaemonMessage_FileTree{FileTree: &remotefsv1.FileTree{WorkspaceName: "proj"}},
 	})
 
 	require.Eventually(t, func() bool {

@@ -1,6 +1,8 @@
-# Daemon-machine config. 统一入口 `rclaude`（app/rclaude）读取本文件，同时拉起
-# daemon 与远端 claude PTY attach，是 daemon 侧的默认启动方式。
-# 拆分诊断时，同一份文件也可分别喂给 `rclaude-daemon` 与 `rclaude-claude`。
+# Daemon-machine config. 唯一入口 `rclaude`（app/rclaude）读取本文件，同时拉起
+# daemon 与远端 agent PTY attach：
+#   rclaude -g <agent> -c <本文件路径>
+# 要运行的 agent 程序（claude / codex / ...）不写在配置里，由 -g/--agent 在
+# 启动命令行声明：裸名走服务端 PATH 解析，或给服务端上的绝对路径。
 server:
   address: "SERVER_IP:9326"
   token: "tok-demo"
@@ -16,8 +18,10 @@ server:
   #   ca_file: ""              # PEM root CA for Caddy's internal CA / self-signed.
   #                            # Leave empty for publicly-trusted certs (system roots).
   #   insecure_skip_verify: false  # diagnostics only; never in production.
+# 工作区根目录不再写在配置里：请在你的项目根目录下启动 rclaude，
+# 启动目录即工作区根；其目录名成为服务端 /workspace/<user_id>/<项目名>/ 中的项目名
+# （目录名必须是单段安全路径：不含 / \ 与控制字符）。
 workspace:
-  path: "/absolute/path/to/workspace"
   exclude:
     - ".git"
     - "node_modules"
@@ -32,14 +36,6 @@ log:
 pty:
   # Keep this aligned with server.yaml if you lower the server-side frame cap.
   frame_max_bytes: 65536
-  # 预测本地回显（mosh 式）：可预测按键在本地立即上屏，不等服务器回显，
-  # 键入延迟与网络 RTT 解耦；预测与服务器真实回显持续对账，错了自动回滚，
-  # 服务端不支持（旧版本）时自动退回纯透传。
-  #   adaptive —— 默认。仅在链路较慢时显示预测（SRTT > 60ms 开启，
-  #               更慢时预测字符加下划线提示）；低延迟链路行为与纯透传一致。
-  #   always   —— 无论链路快慢都显示预测（调试/极致手感用）。
-  #   off      —— 完全关闭，恢复纯透传。
-  # predict: "adaptive"
 # 统一入口 `rclaude` 的启动协调策略（事件总线驱动的失败重试）。
 # max_retries：初始尝试之外允许的重试次数（默认 3）；
 # retry_delay：收到重试通知后再次尝试前的等待（默认 1s）。

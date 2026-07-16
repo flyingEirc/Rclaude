@@ -14,6 +14,11 @@ message FileInfo {
 
 message FileTree {
   repeated FileInfo files = 1;
+  // workspace_name 是 daemon 工作区（项目根目录）的目录名，仅在连接后的第一条
+  // bootstrap 消息中有效，服务端据此把该会话呈现为 /workspace/{user_id}/{workspace_name}/。
+  // 必须是单段安全路径（不含分隔符、"."/".."、控制字符），否则服务端拒绝连接。
+  // 会话中途重发的 FileTree 不得更改它，服务端忽略后续值。
+  string workspace_name = 2;
 }
 
 enum ChangeType {

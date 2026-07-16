@@ -280,6 +280,20 @@ func requestFileOp(
 	return resp, current, nil
 }
 
+// workspaceNameFor 返回某用户当前会话的项目目录名（/workspace/{uid}/ 下唯一的
+// 一层）。会话不在线时与其余 view 辅助函数一样返回 ErrSessionOffline。
+func workspaceNameFor(manager *session.Manager, userID string) (string, error) {
+	current, err := requireSession(manager, userID)
+	if err != nil {
+		return "", err
+	}
+	name := current.WorkspaceName()
+	if name == "" {
+		return "", ErrPathNotFound
+	}
+	return name, nil
+}
+
 func requireSession(manager *session.Manager, userID string) (*session.Session, error) {
 	if manager == nil {
 		return nil, ErrNilManager

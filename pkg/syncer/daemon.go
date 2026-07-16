@@ -34,8 +34,12 @@ var (
 // RunOptions contains the dependencies required to run the daemon loop.
 type RunOptions struct {
 	Config *config.DaemonConfig
-	Logger logx.Logger
-	Dialer func(context.Context, string) (net.Conn, error)
+	// WorkspaceRoot 是本地项目根目录的绝对路径（入口程序以启动 cwd 填充，
+	// 见 ResolveWorkspaceRoot）。其目录名作为项目名随 bootstrap 上报，
+	// 服务端呈现为 /workspace/{user_id}/{项目名}/。
+	WorkspaceRoot string
+	Logger        logx.Logger
+	Dialer        func(context.Context, string) (net.Conn, error)
 	// OnReady, if non-nil, is invoked exactly once when the daemon
 	// establishes its first session with the server (initial file tree sent).
 	OnReady func()
@@ -52,6 +56,8 @@ type runtimeDeps struct {
 	logger          logx.Logger
 	sensitiveFilter *SensitiveFilter
 	auditor         *audit.Recorder
+	workspaceRoot   string
+	workspaceName   string
 	everEstablished bool
 }
 
@@ -78,6 +84,10 @@ func prepareRun(
 	if err := opts.Config.Validate(); err != nil {
 		return nil, nil, fmt.Errorf("syncer: validate daemon config: %w", err)
 	}
+	workspaceName, err := ValidateWorkspaceRoot(opts.WorkspaceRoot)
+	if err != nil {
+		return nil, nil, err
+	}
 	sensitiveFilter, err := NewSensitiveFilter(opts.Config.Workspace.SensitivePatterns)
 	if err != nil {
 		return nil, nil, err
@@ -95,6 +105,8 @@ func prepareRun(
 		logger:          logger,
 		sensitiveFilter: sensitiveFilter,
 		auditor:         auditor,
+		workspaceRoot:   opts.WorkspaceRoot,
+		workspaceName:   workspaceName,
 	}
 	return logx.WithContext(ctx, logger), deps, nil
 }
@@ -226,7 +238,7 @@ func runSession(
 	}
 
 	tree, err := Scan(ScanOptions{
-		Root:            opts.Config.Workspace.Path,
+		Root:            deps.workspaceRoot,
 		Excludes:        opts.Config.Workspace.Exclude,
 		SensitiveFilter: deps.sensitiveFilter,
 	})
@@ -235,7 +247,10 @@ func runSession(
 	}
 	if err := stream.Send(&remotefsv1.DaemonMessage{
 		Msg: &remotefsv1.DaemonMessage_FileTree{
-			FileTree: &remotefsv1.FileTree{Files: tree},
+			FileTree: &remotefsv1.FileTree{
+				Files:         tree,
+				WorkspaceName: deps.workspaceName,
+			},
 		},
 	}); err != nil {
 		return false, fmt.Errorf("syncer: send initial file tree: %w", err)
@@ -277,7 +292,7 @@ func serveStream(
 	locker := newPathLocker()
 	selfWrites := newSelfWriteFilter(opts.Config.SelfWriteTTL)
 	handleOpts := HandleOptions{
-		Root:            opts.Config.Workspace.Path,
+		Root:            deps.workspaceRoot,
 		Locker:          locker,
 		SelfWrites:      selfWrites,
 		SensitiveFilter: deps.sensitiveFilter,
@@ -307,7 +322,7 @@ func serveStream(
 	})
 	start(func(ctx context.Context) error {
 		return Watch(ctx, WatchOptions{
-			Root:            opts.Config.Workspace.Path,
+			Root:            deps.workspaceRoot,
 			Excludes:        opts.Config.Workspace.Exclude,
 			SensitiveFilter: deps.sensitiveFilter,
 			Events:          watchEvents,

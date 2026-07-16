@@ -21,12 +21,17 @@ message ClientFrame {
 }
 
 message AttachReq {
+  reserved 4;                 // was predictive_echo (mosh-style local echo, removed)
+  reserved "predictive_echo";
   string session_id = 1;
   Resize initial_size = 2;
   string term = 3;
-  // predictive_echo asks the server to emit EchoAck frames so the client can
-  // reconcile locally predicted echo against real output (mosh-style).
-  bool predictive_echo = 4;
+  // agent is the program this session runs, declared by the user on the
+  // rclaude command line (-g/--agent): either a bare name resolved via the
+  // server's PATH or an absolute path on the server. Required; the server
+  // rejects an attach without it. There is no shell fallback and no
+  // client-controlled argv.
+  string agent = 5;
   repeated string extra_env = 15;
 }
 
@@ -40,28 +45,21 @@ message Resize {
 message Detach {}
 
 message ServerFrame {
+  reserved 5;           // was echo_ack (mosh-style EchoAck watermark, removed)
+  reserved "echo_ack";
   oneof payload {
     Attached attached = 1;
     bytes stdout = 2;
     Exited exited = 3;
     Error error = 4;
-    EchoAck echo_ack = 5;
   }
 }
 
 message Attached {
+  reserved 3;           // was echo_ack capability bit (predictive echo, removed)
+  reserved "echo_ack";
   string session_id = 1;
   string cwd = 2;
-  // echo_ack confirms the server will emit EchoAck frames for this session.
-  // Absent on older servers, which disables client-side predictive echo.
-  bool echo_ack = 3;
-}
-
-// EchoAck is the mosh-style echo watermark: every stdin byte up to offset
-// (cumulative count of stdin bytes written to the PTY) was written at least
-// ECHO_TIMEOUT ago, so any echo it produced has already been sent as stdout.
-message EchoAck {
-  uint64 offset = 1;
 }
 
 message Exited {

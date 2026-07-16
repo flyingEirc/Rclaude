@@ -26,6 +26,10 @@ var (
 	// ErrBaseNotAbs 表示 base 必须是绝对路径但不是。
 
 	ErrBaseNotAbs = errors.New("safepath: base must be absolute")
+
+	// ErrUnsafeSegment 表示名字不能作为单段安全路径使用。
+
+	ErrUnsafeSegment = errors.New("safepath: unsafe path segment")
 )
 
 // Clean 把任意输入路径规范化为以 forward slash 表示的相对路径，
@@ -153,6 +157,37 @@ func IsWithin(base, target string) (bool, error) {
 	}
 
 	return true, nil
+}
+
+// CleanSegment 校验 name 可以作为单段目录名安全地拼在某个根之下
+//
+// （如 /workspace/{user_id}/{workspace_name} 中的每一段）。
+//
+// 规则：去除首尾空白后非空、不含路径分隔符与控制字符、经 Clean 规范化后不变
+//
+// （排除 "." / ".." / 隐式多段等形式）。返回规范化后的段名。
+func CleanSegment(name string) (string, error) {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return "", ErrUnsafeSegment
+	}
+
+	if strings.ContainsAny(trimmed, `/\`) {
+		return "", ErrUnsafeSegment
+	}
+
+	for _, r := range trimmed {
+		if r < 0x20 || r == 0x7f {
+			return "", ErrUnsafeSegment
+		}
+	}
+
+	cleaned, err := Clean(trimmed)
+	if err != nil || cleaned != trimmed {
+		return "", ErrUnsafeSegment
+	}
+
+	return cleaned, nil
 }
 
 // ToSlash 把任意平台分隔符的路径转为 forward slash 表示。

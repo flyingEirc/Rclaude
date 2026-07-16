@@ -85,18 +85,31 @@ type rootNode struct {
 	inodes  *inodeAllocator
 }
 
-type workspaceNode struct {
+// userNode 是 /workspace/{userID} 这一层：只列出该用户当前 daemon 会话的
+// 项目目录（workspace name），本身不可写。
+type userNode struct {
 	fs.Inode
 	manager *session.Manager
 	userID  string
-	relPath string
 	inodes  *inodeAllocator
+}
+
+type workspaceNode struct {
+	fs.Inode
+	manager   *session.Manager
+	userID    string
+	workspace string
+	relPath   string
+	inodes    *inodeAllocator
 }
 
 var (
 	_ = (fs.NodeGetattrer)((*rootNode)(nil))
 	_ = (fs.NodeLookuper)((*rootNode)(nil))
 	_ = (fs.NodeReaddirer)((*rootNode)(nil))
+	_ = (fs.NodeGetattrer)((*userNode)(nil))
+	_ = (fs.NodeLookuper)((*userNode)(nil))
+	_ = (fs.NodeReaddirer)((*userNode)(nil))
 	_ = (fs.NodeGetattrer)((*workspaceNode)(nil))
 	_ = (fs.NodeLookuper)((*workspaceNode)(nil))
 	_ = (fs.NodeReaddirer)((*workspaceNode)(nil))
@@ -123,8 +136,8 @@ func (n *rootNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) 
 		return nil, errnoFromError(err)
 	}
 	fillEntryOut(out, info)
-	child := &workspaceNode{manager: n.manager, userID: name, relPath: "", inodes: n.inodes}
-	return n.NewInode(ctx, child, toFuseStableAttr(n.inodes.stableAttr(name, "", info))), 0
+	child := &userNode{manager: n.manager, userID: name, inodes: n.inodes}
+	return n.NewInode(ctx, child, toFuseStableAttr(n.inodes.stableAttr(name, "", "", info))), 0
 }
 
 func (n *rootNode) Readdir(_ context.Context) (fs.DirStream, syscall.Errno) {
@@ -132,9 +145,43 @@ func (n *rootNode) Readdir(_ context.Context) (fs.DirStream, syscall.Errno) {
 	entries := make([]fuse.DirEntry, 0, len(userIDs))
 	for _, userID := range userIDs {
 		info := &remotefsv1.FileInfo{IsDir: true}
-		attr := n.inodes.stableAttr(userID, "", info)
+		attr := n.inodes.stableAttr(userID, "", "", info)
 		entries = append(entries, fuse.DirEntry{Name: userID, Mode: attr.Mode, Ino: attr.Ino})
 	}
+	return fs.NewListDirStream(entries), 0
+}
+
+func (n *userNode) Getattr(_ context.Context, _ fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+	if _, err := requireSession(n.manager, n.userID); err != nil {
+		return errnoFromError(err)
+	}
+	out.Mode = syscall.S_IFDIR | 0o555
+	out.Mtime = uint64(time.Now().Unix())
+	return 0
+}
+
+func (n *userNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	workspace, err := workspaceNameFor(n.manager, n.userID)
+	if err != nil {
+		return nil, errnoFromError(err)
+	}
+	if name != workspace {
+		return nil, syscall.ENOENT
+	}
+	info := &remotefsv1.FileInfo{IsDir: true, Mode: 0o555}
+	fillEntryOut(out, info)
+	child := &workspaceNode{manager: n.manager, userID: n.userID, workspace: workspace, relPath: "", inodes: n.inodes}
+	return n.NewInode(ctx, child, toFuseStableAttr(n.inodes.stableAttr(n.userID, workspace, "", info))), 0
+}
+
+func (n *userNode) Readdir(_ context.Context) (fs.DirStream, syscall.Errno) {
+	workspace, err := workspaceNameFor(n.manager, n.userID)
+	if err != nil {
+		return nil, errnoFromError(err)
+	}
+	info := &remotefsv1.FileInfo{IsDir: true}
+	attr := n.inodes.stableAttr(n.userID, workspace, "", info)
+	entries := []fuse.DirEntry{{Name: workspace, Mode: attr.Mode, Ino: attr.Ino}}
 	return fs.NewListDirStream(entries), 0
 }
 
@@ -154,8 +201,8 @@ func (n *workspaceNode) Lookup(ctx context.Context, name string, out *fuse.Entry
 		return nil, errnoFromError(err)
 	}
 	fillEntryOut(out, info)
-	child := &workspaceNode{manager: n.manager, userID: n.userID, relPath: nextPath, inodes: n.inodes}
-	return n.NewInode(ctx, child, toFuseStableAttr(n.inodes.stableAttr(n.userID, nextPath, info))), 0
+	child := &workspaceNode{manager: n.manager, userID: n.userID, workspace: n.workspace, relPath: nextPath, inodes: n.inodes}
+	return n.NewInode(ctx, child, toFuseStableAttr(n.inodes.stableAttr(n.userID, n.workspace, nextPath, info))), 0
 }
 
 func (n *workspaceNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
@@ -170,7 +217,7 @@ func (n *workspaceNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errn
 
 	entries := make([]fuse.DirEntry, 0, len(infos))
 	for _, info := range infos {
-		attr := n.inodes.stableAttr(n.userID, info.GetPath(), info)
+		attr := n.inodes.stableAttr(n.userID, n.workspace, info.GetPath(), info)
 		entries = append(entries, fuse.DirEntry{
 			Name: baseName(info.GetPath()),
 			Mode: attr.Mode,
@@ -222,8 +269,8 @@ func (n *workspaceNode) Create(
 		return nil, nil, 0, errnoFromError(err)
 	}
 	fillEntryOut(out, info)
-	child := &workspaceNode{manager: n.manager, userID: n.userID, relPath: childRel, inodes: n.inodes}
-	inode := n.NewInode(ctx, child, toFuseStableAttr(n.inodes.stableAttr(n.userID, childRel, info)))
+	child := &workspaceNode{manager: n.manager, userID: n.userID, workspace: n.workspace, relPath: childRel, inodes: n.inodes}
+	inode := n.NewInode(ctx, child, toFuseStableAttr(n.inodes.stableAttr(n.userID, n.workspace, childRel, info)))
 	return inode, nil, 0, 0
 }
 
@@ -237,8 +284,8 @@ func (n *workspaceNode) Mkdir(ctx context.Context, name string, _ uint32, out *f
 		return nil, errnoFromError(err)
 	}
 	fillEntryOut(out, info)
-	child := &workspaceNode{manager: n.manager, userID: n.userID, relPath: childRel, inodes: n.inodes}
-	return n.NewInode(ctx, child, toFuseStableAttr(n.inodes.stableAttr(n.userID, childRel, info))), 0
+	child := &workspaceNode{manager: n.manager, userID: n.userID, workspace: n.workspace, relPath: childRel, inodes: n.inodes}
+	return n.NewInode(ctx, child, toFuseStableAttr(n.inodes.stableAttr(n.userID, n.workspace, childRel, info))), 0
 }
 
 func (n *workspaceNode) Unlink(ctx context.Context, name string) syscall.Errno {
@@ -246,7 +293,7 @@ func (n *workspaceNode) Unlink(ctx context.Context, name string) syscall.Errno {
 	if err := removePath(ctx, n.manager, n.userID, childRel); err != nil {
 		return errnoFromError(err)
 	}
-	n.inodes.forget(n.userID, childRel)
+	n.inodes.forget(n.userID, n.workspace, childRel)
 	return 0
 }
 
@@ -255,7 +302,7 @@ func (n *workspaceNode) Rmdir(ctx context.Context, name string) syscall.Errno {
 	if err := removePath(ctx, n.manager, n.userID, childRel); err != nil {
 		return errnoFromError(err)
 	}
-	n.inodes.forget(n.userID, childRel)
+	n.inodes.forget(n.userID, n.workspace, childRel)
 	return 0
 }
 
@@ -270,7 +317,7 @@ func (n *workspaceNode) Rename(
 	if !ok {
 		return syscall.EINVAL
 	}
-	if target.userID != n.userID {
+	if target.userID != n.userID || target.workspace != n.workspace {
 		return syscall.EXDEV
 	}
 
@@ -279,7 +326,7 @@ func (n *workspaceNode) Rename(
 	if err := renamePath(ctx, n.manager, n.userID, oldRel, newRel); err != nil {
 		return errnoFromError(err)
 	}
-	n.inodes.forget(n.userID, oldRel)
+	n.inodes.forget(n.userID, n.workspace, oldRel)
 	return 0
 }
 

@@ -18,6 +18,7 @@ func TestSessionBootstrapAndApplyChange(t *testing.T) {
 	err := s.Bootstrap(&remotefsv1.DaemonMessage{
 		Msg: &remotefsv1.DaemonMessage_FileTree{
 			FileTree: &remotefsv1.FileTree{
+				WorkspaceName: "proj",
 				Files: []*remotefsv1.FileInfo{
 					{Path: "dir", IsDir: true, Mode: 0o755},
 					{Path: "dir/file.txt", Size: 5, Mode: 0o644},
@@ -44,6 +45,38 @@ func TestSessionBootstrapAndApplyChange(t *testing.T) {
 	_, ok = s.Lookup("new.txt")
 	assert.True(t, ok)
 	assert.False(t, s.LastHeartbeat().IsZero())
+	assert.Equal(t, "proj", s.WorkspaceName())
+}
+
+func TestSessionBootstrapRejectsInvalidWorkspaceName(t *testing.T) {
+	t.Parallel()
+
+	for _, name := range []string{"", "  ", ".", "..", "a/b", `a\b`, "a\x00b", "../etc"} {
+		s := NewSession("user-1")
+		err := s.Bootstrap(&remotefsv1.DaemonMessage{
+			Msg: &remotefsv1.DaemonMessage_FileTree{
+				FileTree: &remotefsv1.FileTree{WorkspaceName: name},
+			},
+		})
+		require.Error(t, err, "workspace name %q", name)
+		assert.ErrorIs(t, err, ErrInvalidWorkspaceName, "workspace name %q", name)
+		assert.Empty(t, s.WorkspaceName())
+	}
+}
+
+func TestSessionMidStreamFileTreeKeepsBootstrapWorkspaceName(t *testing.T) {
+	t.Parallel()
+
+	s := NewSession("user-1")
+	require.NoError(t, s.Bootstrap(&remotefsv1.DaemonMessage{
+		Msg: &remotefsv1.DaemonMessage_FileTree{FileTree: &remotefsv1.FileTree{WorkspaceName: "proj"}},
+	}))
+
+	// 会话中途重发 FileTree 不得改名：服务端忽略后续 workspace_name。
+	require.NoError(t, s.handleDaemonMessage(&remotefsv1.DaemonMessage{
+		Msg: &remotefsv1.DaemonMessage_FileTree{FileTree: &remotefsv1.FileTree{WorkspaceName: "other"}},
+	}))
+	assert.Equal(t, "proj", s.WorkspaceName())
 }
 
 func TestSessionRequestMatchesResponse(t *testing.T) {
@@ -55,7 +88,7 @@ func TestSessionRequestMatchesResponse(t *testing.T) {
 	stream := newMockConnectStream(ctx)
 	s := NewSession("user-1")
 	require.NoError(t, s.Bootstrap(&remotefsv1.DaemonMessage{
-		Msg: &remotefsv1.DaemonMessage_FileTree{FileTree: &remotefsv1.FileTree{}},
+		Msg: &remotefsv1.DaemonMessage_FileTree{FileTree: &remotefsv1.FileTree{WorkspaceName: "proj"}},
 	}))
 
 	errCh := make(chan error, 1)
@@ -118,7 +151,7 @@ func TestSessionApplyWriteResultVisibleImmediately(t *testing.T) {
 
 	s := NewSession("user-1")
 	require.NoError(t, s.Bootstrap(&remotefsv1.DaemonMessage{
-		Msg: &remotefsv1.DaemonMessage_FileTree{FileTree: &remotefsv1.FileTree{}},
+		Msg: &remotefsv1.DaemonMessage_FileTree{FileTree: &remotefsv1.FileTree{WorkspaceName: "proj"}},
 	}))
 
 	s.ApplyWriteResult(&remotefsv1.FileInfo{Path: "a.txt", Size: 5, Mode: 0o644})
@@ -134,7 +167,7 @@ func TestSessionApplyDelete(t *testing.T) {
 	s := NewSession("user-1")
 	require.NoError(t, s.Bootstrap(&remotefsv1.DaemonMessage{
 		Msg: &remotefsv1.DaemonMessage_FileTree{
-			FileTree: &remotefsv1.FileTree{Files: []*remotefsv1.FileInfo{
+			FileTree: &remotefsv1.FileTree{WorkspaceName: "proj", Files: []*remotefsv1.FileInfo{
 				{Path: "dir", IsDir: true, Mode: 0o755},
 				{Path: "dir/a.txt", Size: 1, Mode: 0o644},
 			}},
@@ -152,7 +185,7 @@ func TestSessionApplyRename(t *testing.T) {
 	s := NewSession("user-1")
 	require.NoError(t, s.Bootstrap(&remotefsv1.DaemonMessage{
 		Msg: &remotefsv1.DaemonMessage_FileTree{
-			FileTree: &remotefsv1.FileTree{Files: []*remotefsv1.FileInfo{
+			FileTree: &remotefsv1.FileTree{WorkspaceName: "proj", Files: []*remotefsv1.FileInfo{
 				{Path: "old.txt", Size: 1, Mode: 0o644},
 			}},
 		},
@@ -176,7 +209,7 @@ func TestSessionBootstrapClearsContentCache(t *testing.T) {
 
 	require.NoError(t, s.Bootstrap(&remotefsv1.DaemonMessage{
 		Msg: &remotefsv1.DaemonMessage_FileTree{
-			FileTree: &remotefsv1.FileTree{Files: []*remotefsv1.FileInfo{
+			FileTree: &remotefsv1.FileTree{WorkspaceName: "proj", Files: []*remotefsv1.FileInfo{
 				newInfo("a.txt", false, 5, 2),
 			}},
 		},
@@ -283,7 +316,7 @@ func newCachedSession(t *testing.T, files []*remotefsv1.FileInfo) *Session {
 	s := NewSession("user-1", SessionOptions{CacheMaxBytes: 64})
 	require.NoError(t, s.Bootstrap(&remotefsv1.DaemonMessage{
 		Msg: &remotefsv1.DaemonMessage_FileTree{
-			FileTree: &remotefsv1.FileTree{Files: files},
+			FileTree: &remotefsv1.FileTree{WorkspaceName: "proj", Files: files},
 		},
 	}))
 	return s

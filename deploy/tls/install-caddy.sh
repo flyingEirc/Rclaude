@@ -60,6 +60,7 @@ caddyfile="$DOMAIN {
 			versions h2c
 			dial_timeout 5s
 		}
+		flush_interval -1
 	}
 $TLS_LINE
 }

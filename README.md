@@ -8,10 +8,10 @@ From the execution side, files still look like normal local filesystem paths. Fr
 
 Typical flow:
 
-- A cloud Agent or task runner executes `cat /workspace/{user_id}/main.go`.
+- A cloud Agent or task runner executes `cat /workspace/{user_id}/{project}/main.go`.
 - The Server-side FUSE filesystem handles that path.
 - The request is forwarded over a bidirectional gRPC stream to the daemon connected for that user.
-- The daemon reads the configured local workspace and returns the content.
+- The daemon reads the project workspace it was started in and returns the content.
 
 This keeps standard shell tools such as `cat`, `sed`, `grep`, `ls`, `stat`, `mv`, and `rm` usable without a custom file SDK.
 
@@ -19,16 +19,16 @@ This keeps standard shell tools such as `cat`, `sed`, `grep`, `ls`, `stat`, `mv`
 
 The current codebase already provides a working main path:
 
-- `rclaude-daemon` scans a local workspace and connects to the Server with a bidirectional gRPC stream.
+- The daemon inside the unified `rclaude` entry scans a local workspace and connects to the Server with a bidirectional gRPC stream.
 - The Server tracks user sessions, file-tree metadata, and content cache.
-- On Linux, the Server exposes a FUSE view at `/workspace/{user_id}/`.
+- On Linux, the Server exposes a FUSE view at `/workspace/{user_id}/{project}/`, where `{project}` is the name of the local project directory.
 - The execution environment can use ordinary filesystem commands against that mount.
 
 Implemented features include:
 
 - read operations: `Lookup`, `Getattr`, `Readdir`, `Open`, `Read`
 - write operations: create, overwrite, offset write, append, `mkdir`, `rename`, `delete`, `truncate`
-- per-user isolation under `/workspace/{user_id}/`
+- per-user isolation under `/workspace/{user_id}/{project}/`; one active daemon session per user — reconnecting from another project replaces the previous session
 - file-tree cache for directory and attribute lookups
 - whole-file content cache
 - small-file prefetch after directory reads
@@ -39,7 +39,7 @@ Implemented features include:
 - YAML configuration with `RCLAUDE_*` environment overrides
 - static token authentication mapped to `user_id`
 - unified `rclaude` local entry that starts the daemon and the RemotePTY attach together, with dependency-ordered startup and coordinated retry (`pkg/startup`)
-- Server-side terminal passthrough that defaults to the user's interactive login shell in `/workspace/{user_id}` (ls/cd, then launch `claude`/`codex` yourself); pin a fixed program with `pty.binary` / `pty.args` if you prefer
+- Server-side terminal passthrough confined to the agent program declared on the rclaude command line (`-g/--agent`, e.g. `claude` or `codex`): the attach lands directly in that agent in `/workspace/{user_id}/{project}`, the session ends when the agent exits, and there is no shell fallback and no client-controlled argv
 - graceful shutdown on terminal close: SIGINT/SIGTERM/SIGHUP drain in-flight file streams and the PTY before the daemon and session exit
 - file-based structured logging (JSON by default, size/age rotation) that never writes to the terminal, so the PTY passthrough stays clean
 - optional audit log persisting remote file operations to SQLite / MySQL / PostgreSQL
@@ -48,7 +48,7 @@ Implemented features include:
 
 The system has three main parts:
 
-1. `rclaude-daemon`
+1. `rclaude` (unified local entry: daemon + PTY attach)
 2. `rclaude-server`
 3. ordinary shell, Agent, or automation running on the Server side
 
@@ -57,7 +57,7 @@ Local workspace
     ^
     | read/write files and watch changes
     v
-rclaude-daemon
+rclaude (daemon + pty attach)
     ^
     | bidirectional gRPC stream
     v
@@ -65,19 +65,19 @@ rclaude-server
     ^
     | FUSE mount
     v
-/workspace/{user_id}/...
+/workspace/{user_id}/{project}/...
     ^
     | cat / sed / grep / ls / stat / mv / rm ...
     v
 Execution environment
 ```
 
-On the daemon machine these run through the unified `rclaude` entry
+On the daemon machine everything runs through the unified `rclaude` entry
 (`app/rclaude`), which starts the daemon (`RemoteFS.Connect`) and the terminal
 attach (`RemotePTY.Attach`) together and coordinates their startup so the PTY
-only attaches after the daemon has registered. `rclaude-daemon` (`app/client`)
-and `rclaude-claude` (`app/clientpty`) remain as split single-purpose entries
-for diagnostics.
+only attaches after the daemon has registered. It is the only local
+entrypoint; the agent program the remote session runs is declared on its
+command line (`rclaude -g <agent> -c <config>`).
 
 Design points:
 
@@ -107,8 +107,6 @@ Notes:
 api/                    gRPC protocol and generated code
 app/rclaude/            rclaude unified local entry (daemon + PTY, coordinated startup)
 app/server/             rclaude-server entrypoint
-app/client/             rclaude-daemon entrypoint (daemon only, split diagnostics)
-app/clientpty/          rclaude-claude PTY client entrypoint (PTY only, split diagnostics)
 pkg/config/             YAML and environment configuration loading
 pkg/logx/               file-based structured logging (never writes to the terminal)
 pkg/startup/            startup coordinator for the unified entry (dependency gating + retries)
@@ -119,7 +117,7 @@ pkg/session/            Server-side user sessions and request routing
 pkg/contentcache/       Server-side whole-file content cache
 pkg/fusefs/             FUSE filesystem view
 pkg/syncer/             daemon-side scan, watch, sync, and request handling
-pkg/ptyhost/            Server-side PTY child-process spawn (login shell or pinned binary)
+pkg/ptyhost/            Server-side PTY child-process spawn (attach-declared agent)
 pkg/ptyservice/         Server-side RemotePTY gRPC service
 pkg/ptyclient/          daemon-side terminal <-> PTY gRPC bridge
 pkg/ptyattach/          local terminal attach (raw mode, resize, exit codes)
@@ -128,7 +126,7 @@ pkg/transport/          gRPC connection and stream wrappers
 pkg/ratelimit/          daemon-side byte-rate limiting
 internal/inmemtest/     in-memory end-to-end test harness
 internal/testutil/      shared test fixtures and helpers
-deploy/minimal/         minimal remote/local test closure (configs + start/preflight scripts)
+deploy/minimal/         minimal remote/local test closure (configs + start scripts)
 tools/                  proto codegen tool-version pin (tools.go)
 ```
 
@@ -143,12 +141,9 @@ make tools
 Build the binaries:
 
 ```bash
-# Server (remote Linux) and the unified local entry cover the normal flow.
+# The server (remote Linux) and the unified local entry are the only two entrypoints.
 go build -o ./bin/rclaude-server ./app/server
 go build -o ./bin/rclaude ./app/rclaude
-# Optional split single-purpose entries, useful for diagnostics.
-go build -o ./bin/rclaude-daemon ./app/client
-go build -o ./bin/rclaude-claude ./app/clientpty
 ```
 
 Or run a repository-wide build check:
@@ -167,7 +162,7 @@ auth:
   tokens:
     "example-token": "example-user"  # token -> user_id mapping; a daemon trades its token for a user_id. At least one entry required.
 fuse:
-  mountpoint: "/workspace"           # FUSE mount root, must be an absolute path; each user is mounted at {mountpoint}/{user_id}.
+  mountpoint: "/workspace"           # FUSE mount root, must be an absolute path; each user's project appears at {mountpoint}/{user_id}/{project}.
 cache:
   max_bytes: 268435456               # Server-side whole-file content cache cap in bytes; <=0 disables the cache.
 prefetch:
@@ -180,10 +175,12 @@ log:
   level: "info"                      # Log level: debug | info | warn | error
   format: "text"                     # Log format: json (default) | text
 pty:
-  # binary unset (default): spawn the user's interactive login shell.
-  args: []                           # Args passed to binary.
-  workspace_root: "/workspace"       # PTY working-directory root, must be absolute; should match fuse.mountpoint. Actual cwd is {workspace_root}/{user_id}.
+  workspace_root: "/workspace"       # PTY working-directory root, must be absolute; should match fuse.mountpoint. Actual cwd is {workspace_root}/{user_id}/{project}.
 ```
+
+There is no `pty.binary`: the agent program each session runs is declared by
+the user on the rclaude command line (`-g/--agent`) and arrives with the
+attach request.
 
 Prepare a daemon config:
 
@@ -192,7 +189,6 @@ server:
   address: "127.0.0.1:9326"           # Server gRPC address. Required.
   token: "example-token"              # Must match one of the tokens in the Server's auth.tokens.
 workspace:
-  path: "/absolute/path/to/workspace" # Local workspace root, must be an absolute path.
   exclude:                            # Glob patterns excluded from scanning/watching.
     - ".git"
     - "node_modules"
@@ -208,53 +204,62 @@ log:
   format: "text"                      # Log format: json (default) | text
 ```
 
+Note there is no `workspace.path`: the workspace root is the directory you start `rclaude` in, so run it from your project root. That directory's name becomes the project name on the Server (it must be a single safe path segment: no `/`, `\`, or control characters, and not `.`/`..`).
+
 Start the Server:
 
 ```bash
 ./bin/rclaude-server --config ./server.yaml
 ```
 
-Start the daemon:
+Start the local entry from your project root, declaring which agent the remote
+session runs:
 
 ```bash
-./bin/rclaude-daemon --config ./daemon.yaml
+./bin/rclaude -g claude -c ./daemon.yaml
 ```
 
-After startup, the Server side should expose:
+After startup (assuming `rclaude` was started in a project directory named `myproj`), the Server side should expose:
 
 ```text
-/workspace/example-user/
+/workspace/example-user/myproj/
 ```
 
 Example file operations from the Server side:
 
 ```bash
-ls -la /workspace/example-user
-cat /workspace/example-user/README.md
-grep -R "TODO" /workspace/example-user
-mkdir /workspace/example-user/tmp
-printf 'hello\n' > /workspace/example-user/tmp/demo.txt
-mv /workspace/example-user/tmp/demo.txt /workspace/example-user/tmp/demo2.txt
-truncate -s 2 /workspace/example-user/tmp/demo2.txt
-rm /workspace/example-user/tmp/demo2.txt
+ls -la /workspace/example-user/myproj
+cat /workspace/example-user/myproj/README.md
+grep -R "TODO" /workspace/example-user/myproj
+mkdir /workspace/example-user/myproj/tmp
+printf 'hello\n' > /workspace/example-user/myproj/tmp/demo.txt
+mv /workspace/example-user/myproj/tmp/demo.txt /workspace/example-user/myproj/tmp/demo2.txt
+truncate -s 2 /workspace/example-user/myproj/tmp/demo2.txt
+rm /workspace/example-user/myproj/tmp/demo2.txt
 ```
 
 ## Remote PTY And Agent Entry
 
-Rclaude keeps interactive Agent support split into two paths:
+Rclaude keeps interactive Agent support split into two paths inside the one `rclaude` entry:
 
-- File path: `rclaude-daemon` exposes the user's local workspace through `RemoteFS.Connect`; the Server publishes it through FUSE at `/workspace/{user_id}`.
-- Terminal path: `rclaude-claude` uses `RemotePTY.Attach` to forward only terminal bytes, resize events, exit status, and errors.
+- File path: the daemon exposes the user's local workspace through `RemoteFS.Connect`; the Server publishes it through FUSE at `/workspace/{user_id}/{project}`.
+- Terminal path: the PTY attach uses `RemotePTY.Attach` to forward only terminal bytes, resize events, exit status, and errors — plus the declared agent name.
 
-By default (no `pty.binary`) the Server spawns the user's interactive login shell inside `/workspace/{user_id}`, so the passthrough is a working terminal: run `ls`/`cd`, then start `claude`, `codex`, or anything else yourself. Setting `pty.binary` pins a fixed program launched in the same directory instead. Either way the process runs on the Server machine, not on the daemon machine, so the Server OS user must be able to resolve the shell/binary and have the login state or environment variables that CLI needs.
+The agent is declared per session on the command line:
 
-Example PTY config that pins Claude Code (omit `pty.binary` to get the login shell instead):
+```bash
+rclaude -g claude -c ./daemon.yaml                    # bare name, resolved via the Server's PATH
+rclaude -g codex -c ./daemon.yaml
+rclaude -g /root/.local/bin/codex -c ./daemon.yaml    # absolute path on the Server
+```
+
+The Server launches exactly that agent program inside `/workspace/{user_id}/{project}` and the session ends when it exits. There is no shell fallback and no client-controlled argv, so the session cannot `ls`/`cd` on the Server, see the remote workspace path, or leave the agent UI. The process runs on the Server machine, not on the daemon machine, so the Server OS user must be able to resolve the binary (via `PATH` for bare names, or the given absolute path) and have the login state or environment variables that CLI needs.
+
+Example Server PTY config:
 
 ```yaml
 pty:
-  binary: "claude"                    # Fixed executable name/path to launch; leave unset (default) to spawn the login shell instead.
-  args: []                            # Args passed to binary.
-  workspace_root: "/workspace"        # PTY working-directory root, must be absolute; should match fuse.mountpoint. Actual cwd is {workspace_root}/{user_id}.
+  workspace_root: "/workspace"        # PTY working-directory root, must be absolute; should match fuse.mountpoint. Actual cwd is {workspace_root}/{user_id}/{project}.
   env_passthrough:                    # Whitelist of env vars forwarded from the Server process into the PTY child; this list is also the built-in default.
     - "TERM"
     - "LANG"
@@ -267,38 +272,15 @@ pty:
   frame_max_bytes: 65536              # Max bytes per PTY frame, must be > 0; defaults to 65536 (64 KiB).
 ```
 
-Example PTY config for Codex:
-
-```yaml
-pty:
-  binary: "/root/.local/bin/codex"    # Fixed executable path (must resolve on the Server machine).
-  args: []                            # Args passed to binary.
-  workspace_root: "/workspace"        # PTY working-directory root, must be absolute.
-```
-
-For a repeatable Codex read check, the Server can launch `codex exec` through fixed `pty.args`:
-
-```yaml
-pty:
-  binary: "/root/.local/bin/codex"    # Fixed executable path.
-  args:                                # Args passed to binary; here it pins every attach to one read-only codex exec run.
-    - "exec"
-    - "--skip-git-repo-check"
-    - "--sandbox"
-    - "read-only"
-    - "Read README.md in the current directory and reply with the exact first line only."
-```
-
 The minimal remote/local test closure is [deploy/minimal/README.md](deploy/minimal/README.md). Recommended order:
 
-1. Preflight: run `preflight-daemon.sh` locally (and `preflight-server.sh` on the Server).
-2. Start the Server: `deploy/minimal/start-server.sh` cross-builds, ships, and starts `rclaude-server` on the remote.
-3. Start locally: `deploy/minimal/start-rclaude.sh` runs the unified daemon + PTY attach and lands you in the remote session.
+1. Start the Server: `deploy/minimal/start-server.sh` cross-builds, ships, and starts `rclaude-server` on the remote.
+2. Start locally: `deploy/minimal/start-rclaude.sh <agent> <config>` runs the unified daemon + PTY attach and lands you in the remote session.
 
 Current observed status:
 
 - `/bin/sh` scripted PTY plus FUSE file reads pass.
-- Codex CLI TUI attach, cwd `/workspace/{user_id}`, `codex exec` reading a daemon-backed FUSE file, and remote exit code `0` propagation pass.
+- Codex CLI TUI attach, cwd `/workspace/{user_id}/{project}`, `codex exec` reading a daemon-backed FUSE file, and remote exit code `0` propagation pass.
 - Claude Code TUI can render through RemotePTY, but main-prompt acceptance depends on Claude Code onboarding/login for the Server OS user. A Claude login on the daemon machine is not reused by the Server-side process.
 
 ## Logging, Startup, And Shutdown
@@ -318,9 +300,9 @@ log:
   # max_age_days: 7     # days to keep rotated files
 ```
 
-The unified entry writes `rclaude.log`; the split entries write
-`rclaude-daemon.log` and their own files. On the terminal you only see one
-status line per component (`daemon started`, `pty started`).
+The unified entry writes `rclaude.log`; the server writes
+`rclaude-server.log`. On the terminal you only see one status line per
+component (`daemon started`, `pty started`).
 
 Startup is coordinated, not raced. The daemon and PTY start together, but the
 PTY declares a dependency on the daemon, so its first attach waits until the
@@ -362,7 +344,7 @@ Example:
 
 ```bash
 export RCLAUDE_SERVER_ADDRESS=127.0.0.1:9999
-./bin/rclaude-daemon --config ./daemon.yaml
+./bin/rclaude -g claude -c ./daemon.yaml
 ```
 
 Dots map to underscores:

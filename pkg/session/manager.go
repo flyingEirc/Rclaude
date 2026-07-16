@@ -17,6 +17,7 @@ var (
 // DaemonSession exposes the minimal live-daemon state PTY wiring needs.
 type DaemonSession interface {
 	UserID() string
+	WorkspaceName() string
 	LastHeartbeat() time.Time
 }
 

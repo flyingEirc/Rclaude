@@ -83,7 +83,7 @@ func (x Error_Kind) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use Error_Kind.Descriptor instead.
 func (Error_Kind) EnumDescriptor() ([]byte, []int) {
-	return file_remotefs_v1_pty_proto_rawDescGZIP(), []int{8, 0}
+	return file_remotefs_v1_pty_proto_rawDescGZIP(), []int{7, 0}
 }
 
 type ClientFrame struct {
@@ -205,12 +205,15 @@ type AttachReq struct {
 	SessionId   string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
 	InitialSize *Resize                `protobuf:"bytes,2,opt,name=initial_size,json=initialSize,proto3" json:"initial_size,omitempty"`
 	Term        string                 `protobuf:"bytes,3,opt,name=term,proto3" json:"term,omitempty"`
-	// predictive_echo asks the server to emit EchoAck frames so the client can
-	// reconcile locally predicted echo against real output (mosh-style).
-	PredictiveEcho bool     `protobuf:"varint,4,opt,name=predictive_echo,json=predictiveEcho,proto3" json:"predictive_echo,omitempty"`
-	ExtraEnv       []string `protobuf:"bytes,15,rep,name=extra_env,json=extraEnv,proto3" json:"extra_env,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// agent is the program this session runs, declared by the user on the
+	// rclaude command line (-g/--agent): either a bare name resolved via the
+	// server's PATH or an absolute path on the server. Required; the server
+	// rejects an attach without it. There is no shell fallback and no
+	// client-controlled argv.
+	Agent         string   `protobuf:"bytes,5,opt,name=agent,proto3" json:"agent,omitempty"`
+	ExtraEnv      []string `protobuf:"bytes,15,rep,name=extra_env,json=extraEnv,proto3" json:"extra_env,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *AttachReq) Reset() {
@@ -264,11 +267,11 @@ func (x *AttachReq) GetTerm() string {
 	return ""
 }
 
-func (x *AttachReq) GetPredictiveEcho() bool {
+func (x *AttachReq) GetAgent() string {
 	if x != nil {
-		return x.PredictiveEcho
+		return x.Agent
 	}
-	return false
+	return ""
 }
 
 func (x *AttachReq) GetExtraEnv() []string {
@@ -390,7 +393,6 @@ type ServerFrame struct {
 	//	*ServerFrame_Stdout
 	//	*ServerFrame_Exited
 	//	*ServerFrame_Error
-	//	*ServerFrame_EchoAck
 	Payload       isServerFrame_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -469,15 +471,6 @@ func (x *ServerFrame) GetError() *Error {
 	return nil
 }
 
-func (x *ServerFrame) GetEchoAck() *EchoAck {
-	if x != nil {
-		if x, ok := x.Payload.(*ServerFrame_EchoAck); ok {
-			return x.EchoAck
-		}
-	}
-	return nil
-}
-
 type isServerFrame_Payload interface {
 	isServerFrame_Payload()
 }
@@ -498,10 +491,6 @@ type ServerFrame_Error struct {
 	Error *Error `protobuf:"bytes,4,opt,name=error,proto3,oneof"`
 }
 
-type ServerFrame_EchoAck struct {
-	EchoAck *EchoAck `protobuf:"bytes,5,opt,name=echo_ack,json=echoAck,proto3,oneof"`
-}
-
 func (*ServerFrame_Attached) isServerFrame_Payload() {}
 
 func (*ServerFrame_Stdout) isServerFrame_Payload() {}
@@ -510,15 +499,10 @@ func (*ServerFrame_Exited) isServerFrame_Payload() {}
 
 func (*ServerFrame_Error) isServerFrame_Payload() {}
 
-func (*ServerFrame_EchoAck) isServerFrame_Payload() {}
-
 type Attached struct {
-	state     protoimpl.MessageState `protogen:"open.v1"`
-	SessionId string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	Cwd       string                 `protobuf:"bytes,2,opt,name=cwd,proto3" json:"cwd,omitempty"`
-	// echo_ack confirms the server will emit EchoAck frames for this session.
-	// Absent on older servers, which disables client-side predictive echo.
-	EchoAck       bool `protobuf:"varint,3,opt,name=echo_ack,json=echoAck,proto3" json:"echo_ack,omitempty"`
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	Cwd           string                 `protobuf:"bytes,2,opt,name=cwd,proto3" json:"cwd,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -567,60 +551,6 @@ func (x *Attached) GetCwd() string {
 	return ""
 }
 
-func (x *Attached) GetEchoAck() bool {
-	if x != nil {
-		return x.EchoAck
-	}
-	return false
-}
-
-// EchoAck is the mosh-style echo watermark: every stdin byte up to offset
-// (cumulative count of stdin bytes written to the PTY) was written at least
-// ECHO_TIMEOUT ago, so any echo it produced has already been sent as stdout.
-type EchoAck struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Offset        uint64                 `protobuf:"varint,1,opt,name=offset,proto3" json:"offset,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *EchoAck) Reset() {
-	*x = EchoAck{}
-	mi := &file_remotefs_v1_pty_proto_msgTypes[6]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *EchoAck) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*EchoAck) ProtoMessage() {}
-
-func (x *EchoAck) ProtoReflect() protoreflect.Message {
-	mi := &file_remotefs_v1_pty_proto_msgTypes[6]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use EchoAck.ProtoReflect.Descriptor instead.
-func (*EchoAck) Descriptor() ([]byte, []int) {
-	return file_remotefs_v1_pty_proto_rawDescGZIP(), []int{6}
-}
-
-func (x *EchoAck) GetOffset() uint64 {
-	if x != nil {
-		return x.Offset
-	}
-	return 0
-}
-
 type Exited struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Code          int32                  `protobuf:"varint,1,opt,name=code,proto3" json:"code,omitempty"`
@@ -631,7 +561,7 @@ type Exited struct {
 
 func (x *Exited) Reset() {
 	*x = Exited{}
-	mi := &file_remotefs_v1_pty_proto_msgTypes[7]
+	mi := &file_remotefs_v1_pty_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -643,7 +573,7 @@ func (x *Exited) String() string {
 func (*Exited) ProtoMessage() {}
 
 func (x *Exited) ProtoReflect() protoreflect.Message {
-	mi := &file_remotefs_v1_pty_proto_msgTypes[7]
+	mi := &file_remotefs_v1_pty_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -656,7 +586,7 @@ func (x *Exited) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Exited.ProtoReflect.Descriptor instead.
 func (*Exited) Descriptor() ([]byte, []int) {
-	return file_remotefs_v1_pty_proto_rawDescGZIP(), []int{7}
+	return file_remotefs_v1_pty_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *Exited) GetCode() int32 {
@@ -683,7 +613,7 @@ type Error struct {
 
 func (x *Error) Reset() {
 	*x = Error{}
-	mi := &file_remotefs_v1_pty_proto_msgTypes[8]
+	mi := &file_remotefs_v1_pty_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -695,7 +625,7 @@ func (x *Error) String() string {
 func (*Error) ProtoMessage() {}
 
 func (x *Error) ProtoReflect() protoreflect.Message {
-	mi := &file_remotefs_v1_pty_proto_msgTypes[8]
+	mi := &file_remotefs_v1_pty_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -708,7 +638,7 @@ func (x *Error) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Error.ProtoReflect.Descriptor instead.
 func (*Error) Descriptor() ([]byte, []int) {
-	return file_remotefs_v1_pty_proto_rawDescGZIP(), []int{8}
+	return file_remotefs_v1_pty_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *Error) GetKind() Error_Kind {
@@ -735,34 +665,30 @@ const file_remotefs_v1_pty_proto_rawDesc = "" +
 	"\x05stdin\x18\x02 \x01(\fH\x00R\x05stdin\x12-\n" +
 	"\x06resize\x18\x03 \x01(\v2\x13.remotefs.v1.ResizeH\x00R\x06resize\x12-\n" +
 	"\x06detach\x18\x04 \x01(\v2\x13.remotefs.v1.DetachH\x00R\x06detachB\t\n" +
-	"\apayload\"\xbc\x01\n" +
+	"\apayload\"\xc0\x01\n" +
 	"\tAttachReq\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x126\n" +
 	"\finitial_size\x18\x02 \x01(\v2\x13.remotefs.v1.ResizeR\vinitialSize\x12\x12\n" +
-	"\x04term\x18\x03 \x01(\tR\x04term\x12'\n" +
-	"\x0fpredictive_echo\x18\x04 \x01(\bR\x0epredictiveEcho\x12\x1b\n" +
-	"\textra_env\x18\x0f \x03(\tR\bextraEnv\"b\n" +
+	"\x04term\x18\x03 \x01(\tR\x04term\x12\x14\n" +
+	"\x05agent\x18\x05 \x01(\tR\x05agent\x12\x1b\n" +
+	"\textra_env\x18\x0f \x03(\tR\bextraEnvJ\x04\b\x04\x10\x05R\x0fpredictive_echo\"b\n" +
 	"\x06Resize\x12\x12\n" +
 	"\x04cols\x18\x01 \x01(\rR\x04cols\x12\x12\n" +
 	"\x04rows\x18\x02 \x01(\rR\x04rows\x12\x17\n" +
 	"\ax_pixel\x18\x03 \x01(\rR\x06xPixel\x12\x17\n" +
 	"\ay_pixel\x18\x04 \x01(\rR\x06yPixel\"\b\n" +
-	"\x06Detach\"\xf5\x01\n" +
+	"\x06Detach\"\xd2\x01\n" +
 	"\vServerFrame\x123\n" +
 	"\battached\x18\x01 \x01(\v2\x15.remotefs.v1.AttachedH\x00R\battached\x12\x18\n" +
 	"\x06stdout\x18\x02 \x01(\fH\x00R\x06stdout\x12-\n" +
 	"\x06exited\x18\x03 \x01(\v2\x13.remotefs.v1.ExitedH\x00R\x06exited\x12*\n" +
-	"\x05error\x18\x04 \x01(\v2\x12.remotefs.v1.ErrorH\x00R\x05error\x121\n" +
-	"\becho_ack\x18\x05 \x01(\v2\x14.remotefs.v1.EchoAckH\x00R\aechoAckB\t\n" +
-	"\apayload\"V\n" +
+	"\x05error\x18\x04 \x01(\v2\x12.remotefs.v1.ErrorH\x00R\x05errorB\t\n" +
+	"\apayloadJ\x04\b\x05\x10\x06R\becho_ack\"K\n" +
 	"\bAttached\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x10\n" +
-	"\x03cwd\x18\x02 \x01(\tR\x03cwd\x12\x19\n" +
-	"\becho_ack\x18\x03 \x01(\bR\aechoAck\"!\n" +
-	"\aEchoAck\x12\x16\n" +
-	"\x06offset\x18\x01 \x01(\x04R\x06offset\"4\n" +
+	"\x03cwd\x18\x02 \x01(\tR\x03cwdJ\x04\b\x03\x10\x04R\becho_ack\"4\n" +
 	"\x06Exited\x12\x12\n" +
 	"\x04code\x18\x01 \x01(\x05R\x04code\x12\x16\n" +
 	"\x06signal\x18\x02 \x01(\rR\x06signal\"\x91\x02\n" +
@@ -794,7 +720,7 @@ func file_remotefs_v1_pty_proto_rawDescGZIP() []byte {
 }
 
 var file_remotefs_v1_pty_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_remotefs_v1_pty_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
+var file_remotefs_v1_pty_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_remotefs_v1_pty_proto_goTypes = []any{
 	(Error_Kind)(0),     // 0: remotefs.v1.Error.Kind
 	(*ClientFrame)(nil), // 1: remotefs.v1.ClientFrame
@@ -803,27 +729,25 @@ var file_remotefs_v1_pty_proto_goTypes = []any{
 	(*Detach)(nil),      // 4: remotefs.v1.Detach
 	(*ServerFrame)(nil), // 5: remotefs.v1.ServerFrame
 	(*Attached)(nil),    // 6: remotefs.v1.Attached
-	(*EchoAck)(nil),     // 7: remotefs.v1.EchoAck
-	(*Exited)(nil),      // 8: remotefs.v1.Exited
-	(*Error)(nil),       // 9: remotefs.v1.Error
+	(*Exited)(nil),      // 7: remotefs.v1.Exited
+	(*Error)(nil),       // 8: remotefs.v1.Error
 }
 var file_remotefs_v1_pty_proto_depIdxs = []int32{
-	2,  // 0: remotefs.v1.ClientFrame.attach:type_name -> remotefs.v1.AttachReq
-	3,  // 1: remotefs.v1.ClientFrame.resize:type_name -> remotefs.v1.Resize
-	4,  // 2: remotefs.v1.ClientFrame.detach:type_name -> remotefs.v1.Detach
-	3,  // 3: remotefs.v1.AttachReq.initial_size:type_name -> remotefs.v1.Resize
-	6,  // 4: remotefs.v1.ServerFrame.attached:type_name -> remotefs.v1.Attached
-	8,  // 5: remotefs.v1.ServerFrame.exited:type_name -> remotefs.v1.Exited
-	9,  // 6: remotefs.v1.ServerFrame.error:type_name -> remotefs.v1.Error
-	7,  // 7: remotefs.v1.ServerFrame.echo_ack:type_name -> remotefs.v1.EchoAck
-	0,  // 8: remotefs.v1.Error.kind:type_name -> remotefs.v1.Error.Kind
-	1,  // 9: remotefs.v1.RemotePTY.Attach:input_type -> remotefs.v1.ClientFrame
-	5,  // 10: remotefs.v1.RemotePTY.Attach:output_type -> remotefs.v1.ServerFrame
-	10, // [10:11] is the sub-list for method output_type
-	9,  // [9:10] is the sub-list for method input_type
-	9,  // [9:9] is the sub-list for extension type_name
-	9,  // [9:9] is the sub-list for extension extendee
-	0,  // [0:9] is the sub-list for field type_name
+	2, // 0: remotefs.v1.ClientFrame.attach:type_name -> remotefs.v1.AttachReq
+	3, // 1: remotefs.v1.ClientFrame.resize:type_name -> remotefs.v1.Resize
+	4, // 2: remotefs.v1.ClientFrame.detach:type_name -> remotefs.v1.Detach
+	3, // 3: remotefs.v1.AttachReq.initial_size:type_name -> remotefs.v1.Resize
+	6, // 4: remotefs.v1.ServerFrame.attached:type_name -> remotefs.v1.Attached
+	7, // 5: remotefs.v1.ServerFrame.exited:type_name -> remotefs.v1.Exited
+	8, // 6: remotefs.v1.ServerFrame.error:type_name -> remotefs.v1.Error
+	0, // 7: remotefs.v1.Error.kind:type_name -> remotefs.v1.Error.Kind
+	1, // 8: remotefs.v1.RemotePTY.Attach:input_type -> remotefs.v1.ClientFrame
+	5, // 9: remotefs.v1.RemotePTY.Attach:output_type -> remotefs.v1.ServerFrame
+	9, // [9:10] is the sub-list for method output_type
+	8, // [8:9] is the sub-list for method input_type
+	8, // [8:8] is the sub-list for extension type_name
+	8, // [8:8] is the sub-list for extension extendee
+	0, // [0:8] is the sub-list for field type_name
 }
 
 func init() { file_remotefs_v1_pty_proto_init() }
@@ -842,7 +766,6 @@ func file_remotefs_v1_pty_proto_init() {
 		(*ServerFrame_Stdout)(nil),
 		(*ServerFrame_Exited)(nil),
 		(*ServerFrame_Error)(nil),
-		(*ServerFrame_EchoAck)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -850,7 +773,7 @@ func file_remotefs_v1_pty_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_remotefs_v1_pty_proto_rawDesc), len(file_remotefs_v1_pty_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   9,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

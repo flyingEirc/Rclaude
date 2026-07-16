@@ -98,7 +98,7 @@ func TestManagerHandleDisconnectRetainsOfflineReadonly(t *testing.T) {
 	manager := NewManager(ManagerOptions{OfflineReadOnlyTTL: time.Minute})
 	current := NewSession("user-1")
 	require.NoError(t, current.Bootstrap(&remotefsv1.DaemonMessage{
-		Msg: &remotefsv1.DaemonMessage_FileTree{FileTree: &remotefsv1.FileTree{}},
+		Msg: &remotefsv1.DaemonMessage_FileTree{FileTree: &remotefsv1.FileTree{WorkspaceName: "proj"}},
 	}))
 	_, err := manager.Register(current)
 	require.NoError(t, err)
@@ -118,7 +118,7 @@ func TestManagerGetPrunesExpiredOfflineSession(t *testing.T) {
 	manager := NewManager()
 	current := NewSession("user-1")
 	require.NoError(t, current.Bootstrap(&remotefsv1.DaemonMessage{
-		Msg: &remotefsv1.DaemonMessage_FileTree{FileTree: &remotefsv1.FileTree{}},
+		Msg: &remotefsv1.DaemonMessage_FileTree{FileTree: &remotefsv1.FileTree{WorkspaceName: "proj"}},
 	}))
 	_, err := manager.Register(current)
 	require.NoError(t, err)
@@ -137,7 +137,7 @@ func TestManagerLookupDaemonReturnsLiveSession(t *testing.T) {
 	manager := NewManager()
 	current := NewSession("user-1")
 	require.NoError(t, current.Bootstrap(&remotefsv1.DaemonMessage{
-		Msg: &remotefsv1.DaemonMessage_FileTree{FileTree: &remotefsv1.FileTree{}},
+		Msg: &remotefsv1.DaemonMessage_FileTree{FileTree: &remotefsv1.FileTree{WorkspaceName: "proj"}},
 	}))
 	_, err := manager.Register(current)
 	require.NoError(t, err)
@@ -154,7 +154,7 @@ func TestManagerLookupDaemonSkipsOfflineSnapshot(t *testing.T) {
 	manager := NewManager(ManagerOptions{OfflineReadOnlyTTL: time.Minute})
 	current := NewSession("user-1")
 	require.NoError(t, current.Bootstrap(&remotefsv1.DaemonMessage{
-		Msg: &remotefsv1.DaemonMessage_FileTree{FileTree: &remotefsv1.FileTree{}},
+		Msg: &remotefsv1.DaemonMessage_FileTree{FileTree: &remotefsv1.FileTree{WorkspaceName: "proj"}},
 	}))
 	_, err := manager.Register(current)
 	require.NoError(t, err)
