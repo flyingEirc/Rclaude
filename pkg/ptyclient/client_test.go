@@ -118,6 +118,7 @@ func TestClientHappyPath(t *testing.T) {
 		Attach: ptyclient.AttachParams{
 			InitialSize: ptyclient.WindowSize{Cols: 80, Rows: 24},
 			Term:        "xterm-256color",
+			Agent:       "claude",
 		},
 	})
 
@@ -142,6 +143,7 @@ func TestClientHappyPath(t *testing.T) {
 	require.NotEmpty(t, frames)
 	require.NotNil(t, frames[0].GetAttach())
 	require.Equal(t, "xterm-256color", frames[0].GetAttach().GetTerm())
+	require.Equal(t, "claude", frames[0].GetAttach().GetAgent())
 	require.Equal(t, uint32(80), frames[0].GetAttach().GetInitialSize().GetCols())
 	require.Contains(t, sentStdinPayloads(frames), []byte("hello\n"))
 }

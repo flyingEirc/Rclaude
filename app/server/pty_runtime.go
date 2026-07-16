@@ -26,8 +26,6 @@ func newPTYService(cfg *config.ServerConfig, manager *session.Manager, logger lo
 		Spawner:      ptySpawner{},
 		AttachLimit:  newAttachLimiterStore(cfg.PTY.RateLimit.AttachQPS, cfg.PTY.RateLimit.AttachBurst),
 		InputLimit:   newInputLimiterStore(cfg.PTY.RateLimit.StdinBPS, cfg.PTY.RateLimit.StdinBurst),
-		Binary:       cfg.PTY.Binary,
-		Args:         append([]string(nil), cfg.PTY.Args...),
 		Workspace:    cfg.PTY.WorkspaceRoot,
 		EnvWhitelist: append([]string(nil), cfg.PTY.EnvPassthrough...),
 		FrameMax:     cfg.PTY.FrameMaxBytes,
@@ -40,12 +38,15 @@ type ptyRegistry struct {
 	manager *session.Manager
 }
 
-func (r ptyRegistry) LookupDaemon(userID string) bool {
+func (r ptyRegistry) LookupDaemon(userID string) (string, bool) {
 	if r.manager == nil {
-		return false
+		return "", false
 	}
-	_, ok := r.manager.LookupDaemon(userID)
-	return ok
+	daemon, ok := r.manager.LookupDaemon(userID)
+	if !ok {
+		return "", false
+	}
+	return daemon.WorkspaceName(), true
 }
 
 func (r ptyRegistry) RegisterPTY(userID string) (string, bool, error) {

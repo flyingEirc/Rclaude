@@ -15,8 +15,6 @@ func TestLoadDaemonStartupDefaults(t *testing.T) {
 	body := `
 server:
   address: "example.com:9000"
-workspace:
-  path: ` + escapeYAML(absWorkspace()) + `
 `
 	path := writeYAML(t, "daemon.yaml", body)
 	cfg, err := config.LoadDaemon(path)
@@ -30,8 +28,6 @@ func TestLoadDaemonStartupExplicit(t *testing.T) {
 	body := `
 server:
   address: "example.com:9000"
-workspace:
-  path: ` + escapeYAML(absWorkspace()) + `
 startup:
   max_retries: 5
   retry_delay: 250ms
@@ -48,8 +44,6 @@ func TestLoadDaemonStartupZeroRetriesAllowed(t *testing.T) {
 	body := `
 server:
   address: "example.com:9000"
-workspace:
-  path: ` + escapeYAML(absWorkspace()) + `
 startup:
   max_retries: 0
   retry_delay: 0s
@@ -66,8 +60,6 @@ func TestLoadDaemonStartupRejectsNegativeRetries(t *testing.T) {
 	body := `
 server:
   address: "example.com:9000"
-workspace:
-  path: ` + escapeYAML(absWorkspace()) + `
 startup:
   max_retries: -1
 `
@@ -81,8 +73,6 @@ func TestLoadDaemonStartupRejectsNegativeDelay(t *testing.T) {
 	body := `
 server:
   address: "example.com:9000"
-workspace:
-  path: ` + escapeYAML(absWorkspace()) + `
 startup:
   retry_delay: -1s
 `

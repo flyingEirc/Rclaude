@@ -9,6 +9,9 @@
 # 关键点：
 #   - reverse_proxy 必须用 h2c 回源（versions h2c），否则 Caddy 默认以 HTTP/1.1
 #     回源，gRPC 直接失败。
+#   - 必须设 flush_interval -1：让 Caddy 每次写入立即 flush 到客户端。否则 Caddy 会
+#     缓冲/成批投递交互式 PTY 的服务器输出，把每帧渲染攒着一起发——实测在 ~234ms
+#     链路上给往返再叠加 ~100ms 的净延迟，交互手感明显变差。务必开启。
 #   - 不要给这条流设 response_header_timeout 或读写超时：RemotePTY/RemoteFS 都是
 #     常驻双向流，交互式 PTY 可长时间空闲，任何流级超时都会把它掐断。
 #   - 客户端/服务端已启用 gRPC keepalive（HTTP/2 PING，见 docs/reference/
@@ -22,6 +25,8 @@
 			versions h2c
 			dial_timeout 5s
 		}
+		# 立即 flush 每次写入，禁止 Caddy 缓冲/成批投递交互式流（见上文说明）。
+		flush_interval -1
 	}
 
 	# ---- 证书方案（三选一，由 install-caddy.sh 的 RCLAUDE_TLS_MODE 决定）----

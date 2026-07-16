@@ -12,6 +12,7 @@ import (
 	remotefsv1 "flyingEirc/Rclaude/api/proto/remotefs/v1"
 	"flyingEirc/Rclaude/pkg/contentcache"
 	"flyingEirc/Rclaude/pkg/fstree"
+	"flyingEirc/Rclaude/pkg/safepath"
 )
 
 const sessionSendBufferSize = 64
@@ -23,6 +24,9 @@ var (
 	ErrNilDaemonMessage = errors.New("session: nil daemon message")
 	// ErrMissingInitialFileTree indicates that the first daemon message was not a file tree.
 	ErrMissingInitialFileTree = errors.New("session: first daemon message must contain file_tree")
+	// ErrInvalidWorkspaceName indicates that the bootstrap file tree carried an
+	// empty or unsafe workspace name.
+	ErrInvalidWorkspaceName = errors.New("session: bootstrap workspace_name must be a single safe path segment")
 	// ErrDuplicateRequestID indicates that a request id is already in flight.
 	ErrDuplicateRequestID = errors.New("session: duplicate request id")
 	// ErrSessionClosed indicates that the session is no longer usable.
@@ -36,6 +40,11 @@ var (
 // Session holds server-side state for one connected daemon.
 type Session struct {
 	userID string
+
+	// workspaceName is the daemon workspace (project root) directory name,
+	// validated and set once during Bootstrap, immutable afterwards. It is the
+	// {workspace_name} level in /workspace/{user_id}/{workspace_name}/.
+	workspaceName string
 
 	sendCh chan *remotefsv1.ServerMessage
 
@@ -88,6 +97,15 @@ func (s *Session) UserID() string {
 	return s.userID
 }
 
+// WorkspaceName returns the workspace (project) directory name established at
+// Bootstrap. Empty only before Bootstrap succeeded.
+func (s *Session) WorkspaceName() string {
+	if s == nil {
+		return ""
+	}
+	return s.workspaceName
+}
+
 // LastHeartbeat returns the most recent liveness timestamp observed from the daemon.
 func (s *Session) LastHeartbeat() time.Time {
 	if s == nil {
@@ -100,7 +118,9 @@ func (s *Session) LastHeartbeat() time.Time {
 	return time.Unix(0, nanos)
 }
 
-// Bootstrap consumes the mandatory initial file tree message and replaces the current tree snapshot.
+// Bootstrap consumes the mandatory initial file tree message and replaces the
+// current tree snapshot. The bootstrap message must carry a valid workspace
+// name; later FileTree messages within the session keep the bootstrap name.
 func (s *Session) Bootstrap(msg *remotefsv1.DaemonMessage) error {
 	if msg == nil {
 		return ErrNilDaemonMessage
@@ -109,9 +129,14 @@ func (s *Session) Bootstrap(msg *remotefsv1.DaemonMessage) error {
 	if fileTree == nil {
 		return ErrMissingInitialFileTree
 	}
+	workspaceName, err := safepath.CleanSegment(fileTree.GetWorkspaceName())
+	if err != nil {
+		return ErrInvalidWorkspaceName
+	}
 	if err := s.replaceTree(fileTree); err != nil {
 		return err
 	}
+	s.workspaceName = workspaceName
 	s.clearContentCache()
 	s.touchHeartbeat()
 	return nil

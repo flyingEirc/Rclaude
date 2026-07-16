@@ -4,6 +4,7 @@ import (
 	"errors"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -151,6 +152,28 @@ func TestIsWithin(t *testing.T) {
 		t.Parallel()
 		_, err := safepath.IsWithin("", base)
 		require.ErrorIs(t, err, safepath.ErrEmptyPath)
+	})
+}
+
+func TestCleanSegment(t *testing.T) {
+	t.Parallel()
+
+	t.Run("valid", func(t *testing.T) {
+		t.Parallel()
+		for _, name := range []string{"proj", "my-project_1", "项目A", "a.b", "  padded  "} {
+			got, err := safepath.CleanSegment(name)
+			require.NoError(t, err, "name %q", name)
+			assert.Equal(t, strings.TrimSpace(name), got, "name %q", name)
+		}
+	})
+
+	t.Run("unsafe", func(t *testing.T) {
+		t.Parallel()
+		for _, name := range []string{"", "   ", ".", "..", "a/b", `a\b`, "../x", "a\x00b", "a\tb", "a\x7fb"} {
+			_, err := safepath.CleanSegment(name)
+			require.Error(t, err, "name %q", name)
+			assert.ErrorIs(t, err, safepath.ErrUnsafeSegment, "name %q", name)
+		}
 	})
 }
 

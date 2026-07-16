@@ -22,13 +22,6 @@ func writeYAML(t *testing.T, name, body string) string {
 	return p
 }
 
-func absWorkspace() string {
-	if runtime.GOOS == "windows" {
-		return `C:\workspace\alice`
-	}
-	return "/workspace/alice"
-}
-
 func absMountpoint() string {
 	if runtime.GOOS == "windows" {
 		return `C:\mnt\rclaude`
@@ -43,7 +36,6 @@ server:
   address: "example.com:9000"
   token: "tk"
 workspace:
-  path: ` + escapeYAML(absWorkspace()) + `
   exclude: [".git", "node_modules"]
   sensitive_patterns: ["secrets/**", "*.local.env"]
 log:
@@ -55,7 +47,6 @@ log:
 	require.NoError(t, err)
 	assert.Equal(t, "example.com:9000", cfg.Server.Address)
 	assert.Equal(t, "tk", cfg.Server.Token)
-	assert.Equal(t, absWorkspace(), cfg.Workspace.Path)
 	assert.Equal(t, []string{".git", "node_modules"}, cfg.Workspace.Exclude)
 	assert.Equal(t, []string{"secrets/**", "*.local.env"}, cfg.Workspace.SensitivePatterns)
 	assert.Equal(t, "info", cfg.Log.Level)
@@ -70,8 +61,6 @@ func TestLoadDaemonExplicitRateLimit(t *testing.T) {
 	body := `
 server:
   address: "example.com:9000"
-workspace:
-  path: ` + escapeYAML(absWorkspace()) + `
 rate_limit:
   read_bytes_per_sec: 1024
   write_bytes_per_sec: 2048
@@ -88,8 +77,6 @@ func TestLoadDaemonExplicitPTYFrameMaxBytes(t *testing.T) {
 	body := `
 server:
   address: "example.com:9000"
-workspace:
-  path: ` + escapeYAML(absWorkspace()) + `
 pty:
   frame_max_bytes: 32768
 `
@@ -112,8 +99,6 @@ func TestLoadDaemonNegativeRateLimit(t *testing.T) {
 			body: `
 server:
   address: "example.com:9000"
-workspace:
-  path: ` + escapeYAML(absWorkspace()) + `
 rate_limit:
   read_bytes_per_sec: -1
 `,
@@ -124,8 +109,6 @@ rate_limit:
 			body: `
 server:
   address: "example.com:9000"
-workspace:
-  path: ` + escapeYAML(absWorkspace()) + `
 rate_limit:
   write_bytes_per_sec: -1
 `,
@@ -149,8 +132,6 @@ func TestLoadDaemonPTYNonPositiveFrameMaxBytes(t *testing.T) {
 	body := `
 server:
   address: "example.com:9000"
-workspace:
-  path: ` + escapeYAML(absWorkspace()) + `
 pty:
   frame_max_bytes: 0
 `
@@ -160,64 +141,14 @@ pty:
 	assert.True(t, errors.Is(err, config.ErrPTYFrameMaxBytesNegative))
 }
 
-func TestLoadDaemonPTYPredictInvalid(t *testing.T) {
-	t.Parallel()
-	body := `
-server:
-  address: "example.com:9000"
-workspace:
-  path: ` + escapeYAML(absWorkspace()) + `
-pty:
-  predict: sometimes
-`
-	path := writeYAML(t, "daemon.yaml", body)
-	_, err := config.LoadDaemon(path)
-	require.Error(t, err)
-	assert.True(t, errors.Is(err, config.ErrPTYPredictInvalid))
-}
-
-func TestLoadDaemonPTYPredictModes(t *testing.T) {
-	t.Parallel()
-	for _, mode := range []string{"adaptive", "always", "off"} {
-		body := `
-server:
-  address: "example.com:9000"
-workspace:
-  path: ` + escapeYAML(absWorkspace()) + `
-pty:
-  predict: ` + mode + `
-`
-		path := writeYAML(t, "daemon-"+mode+".yaml", body)
-		cfg, err := config.LoadDaemon(path)
-		require.NoError(t, err, mode)
-		assert.Equal(t, mode, cfg.PTY.Predict)
-	}
-}
-
 func TestLoadDaemonMissingAddress(t *testing.T) {
 	t.Parallel()
 	body := `
-workspace:
-  path: ` + escapeYAML(absWorkspace()) + `
 `
 	path := writeYAML(t, "daemon.yaml", body)
 	_, err := config.LoadDaemon(path)
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, config.ErrEmptyServerAddress))
-}
-
-func TestLoadDaemonRelativeWorkspace(t *testing.T) {
-	t.Parallel()
-	body := `
-server:
-  address: "example.com:9000"
-workspace:
-  path: "relative/path"
-`
-	path := writeYAML(t, "daemon.yaml", body)
-	_, err := config.LoadDaemon(path)
-	require.Error(t, err)
-	assert.True(t, errors.Is(err, config.ErrWorkspacePathNotAbs))
 }
 
 func TestLoadServerOK(t *testing.T) {
@@ -350,6 +281,8 @@ prefetch:
 	assert.EqualValues(t, 4, cfg.Prefetch.MaxFilesPerDir)
 }
 
+// TestLoadServerPTYDefaults 覆盖无 pty 段的服务端配置：agent 程序由 attach
+// 声明（rclaude -g），服务端不再有 pty.binary，缺省 pty 段必须可启动。
 func TestLoadServerPTYDefaults(t *testing.T) {
 	t.Parallel()
 	body := `
@@ -362,8 +295,6 @@ fuse:
 	path := writeYAML(t, "server.yaml", body)
 	cfg, err := config.LoadServer(path)
 	require.NoError(t, err)
-	assert.Equal(t, config.DefaultPTYBinary, cfg.PTY.Binary)
-	assert.Empty(t, cfg.PTY.Args)
 	assert.Equal(t, config.DefaultPTYWorkspaceRoot, cfg.PTY.WorkspaceRoot)
 	assert.Equal(t, config.DefaultPTYEnvPassthrough, cfg.PTY.EnvPassthrough)
 	assert.Contains(t, cfg.PTY.EnvPassthrough, "HOME")
@@ -388,8 +319,6 @@ auth:
 fuse:
   mountpoint: ` + escapeYAML(absMountpoint()) + `
 pty:
-  binary: "/usr/local/bin/claude"
-  args: ["--model", "sonnet"]
   workspace_root: "/srv/workspace"
   env_passthrough: ["TERM", "PATH"]
   frame_max_bytes: 32768
@@ -403,8 +332,6 @@ pty:
 	path := writeYAML(t, "server.yaml", body)
 	cfg, err := config.LoadServer(path)
 	require.NoError(t, err)
-	assert.Equal(t, "/usr/local/bin/claude", cfg.PTY.Binary)
-	assert.Equal(t, []string{"--model", "sonnet"}, cfg.PTY.Args)
 	assert.Equal(t, "/srv/workspace", cfg.PTY.WorkspaceRoot)
 	assert.Equal(t, []string{"TERM", "PATH"}, cfg.PTY.EnvPassthrough)
 	assert.EqualValues(t, 32768, cfg.PTY.FrameMaxBytes)
@@ -525,8 +452,6 @@ func TestLoadDaemonEnvOverride(t *testing.T) {
 	body := `
 server:
   address: "fallback:1"
-workspace:
-  path: ` + escapeYAML(absWorkspace()) + `
 `
 	path := writeYAML(t, "daemon.yaml", body)
 	t.Setenv("RCLAUDE_SERVER_ADDRESS", "envhost:9999")

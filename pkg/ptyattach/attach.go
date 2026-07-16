@@ -17,7 +17,6 @@ import (
 	"flyingEirc/Rclaude/pkg/auth"
 	"flyingEirc/Rclaude/pkg/config"
 	"flyingEirc/Rclaude/pkg/ptyclient"
-	"flyingEirc/Rclaude/pkg/ptypredict"
 	"flyingEirc/Rclaude/pkg/transport"
 )
 
@@ -68,15 +67,20 @@ func (e *ExitError) Error() string {
 type Options struct {
 	// ConfigPath points at the daemon YAML config (server address/token).
 	ConfigPath string
+	// Agent is the program the remote session runs, declared by the user on
+	// the rclaude command line (-g/--agent): a bare name resolved via the
+	// server's PATH or an absolute path on the server.
+	Agent string
 	// OnAttached, if non-nil, runs once when the attach handshake succeeds.
 	OnAttached func()
 }
 
-// Run attaches the local terminal to the remote claude PTY session described
+// Run attaches the local terminal to the remote agent PTY session described
 // by the daemon config. Mapped session endings are returned as *ExitError.
 func Run(ctx context.Context, opts Options) error {
 	deps := defaultCommandDeps()
 	deps.onAttached = opts.OnAttached
+	deps.agent = opts.Agent
 	return runCommand(ctx, deps, opts.ConfigPath)
 }
 
@@ -84,7 +88,6 @@ type loadedConfig struct {
 	Address  string
 	Token    string
 	FrameMax int
-	Predict  string
 	TLS      *transport.TLSConfig
 }
 
@@ -103,6 +106,7 @@ type commandDeps struct {
 	stdinFD    int
 	stdoutFD   int
 	termName   string
+	agent      string
 	onAttached func()
 }
 
@@ -114,7 +118,6 @@ type commandRuntime struct {
 	stdout      io.Writer
 	stopBridge  func()
 	frameMax    int
-	predictor   ptyclient.Predictor
 }
 
 func defaultCommandDeps() commandDeps {
@@ -156,11 +159,10 @@ func runCommand(ctx context.Context, deps commandDeps, configPath string) (err e
 		Resizes:    runtime.termSession.Resizes,
 		FrameMax:   runtime.frameMax,
 		OnAttached: deps.onAttached,
-		Predictor:  runtime.predictor,
 		Attach: ptyclient.AttachParams{
-			InitialSize:    runtime.termSession.InitialSize,
-			Term:           commandTermName(deps.termName),
-			PredictiveEcho: runtime.predictor != nil,
+			InitialSize: runtime.termSession.InitialSize,
+			Term:        commandTermName(deps.termName),
+			Agent:       deps.agent,
 		},
 	}).Run(ctx)
 
@@ -206,27 +208,7 @@ func prepareCommandRuntime(ctx context.Context, deps commandDeps, cfg loadedConf
 		stdout:      deps.stdout,
 		stopBridge:  stopBridge,
 		frameMax:    clientFrameMax(int64(cfg.FrameMax)),
-		predictor:   newPredictor(cfg.Predict, deps.stdout, termSession.InitialSize),
 	}, nil
-}
-
-// newPredictor builds the predictive-echo engine, or nil (plain passthrough)
-// when the mode is off or unrecognized.
-func newPredictor(mode string, out io.Writer, size ptyclient.WindowSize) ptyclient.Predictor {
-	parsed, ok := ptypredict.ParseMode(mode)
-	if !ok || parsed == ptypredict.ModeOff {
-		return nil
-	}
-	engine := ptypredict.New(ptypredict.Config{
-		Out:  out,
-		Cols: int(size.Cols),
-		Rows: int(size.Rows),
-		Mode: parsed,
-	})
-	if engine == nil {
-		return nil
-	}
-	return engine
 }
 
 func closeCommandRuntime(runErr *error, runtime commandRuntime) {
@@ -278,7 +260,6 @@ func loadClientConfigFromDaemon(path string) (loadedConfig, error) {
 		Address:  strings.TrimSpace(cfg.Server.Address),
 		Token:    token,
 		FrameMax: clientFrameMax(cfg.PTY.FrameMaxBytes),
-		Predict:  strings.TrimSpace(cfg.PTY.Predict),
 		TLS:      dialTLS(cfg.Server.TLS),
 	}, nil
 }
@@ -437,7 +418,7 @@ func serverErrorMessage(serverErr *remotefsv1.Error) string {
 	case remotefsv1.Error_KIND_DAEMON_NOT_CONNECTED:
 		return "daemon offline, run daemon first"
 	case remotefsv1.Error_KIND_SESSION_BUSY:
-		return "another claude session is active"
+		return "another agent session is active"
 	case remotefsv1.Error_KIND_RATE_LIMITED:
 		return "too many attach requests"
 	case remotefsv1.Error_KIND_PROTOCOL:
@@ -450,11 +431,11 @@ func serverErrorMessage(serverErr *remotefsv1.Error) string {
 }
 
 func spawnFailedMessage(detail string) string {
-	msg := "failed to start remote claude process on Server"
+	msg := "failed to start remote agent process on Server"
 	if detail = strings.TrimSpace(detail); detail != "" {
 		msg += ": " + detail
 	}
-	msg += "; check Server pty.binary, pty.args, PATH, /workspace/<user_id>, and Server-side Claude login"
+	msg += "; check the -g/--agent name resolves on the Server (PATH or absolute path), /workspace/<user_id>, and Server-side agent login"
 	return msg
 }
 

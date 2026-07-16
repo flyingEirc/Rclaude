@@ -5,13 +5,12 @@ auth:
 fuse:
   mountpoint: "/workspace"
 pty:
-  # Leave binary unset (default) to hand the user their interactive login shell
-  # in /workspace/<user_id>: they can ls/cd and launch claude/codex themselves.
-  # Set it only to pin a specific program, e.g. "claude", "codex", or "/bin/sh".
-  # binary: ""
-  # Optional server-side argv appended after pty.binary (ignored for the default
-  # login shell). The client cannot override this.
-  args: []
+  # There is no pty.binary here: the agent program each session runs (claude,
+  # codex, ...) is declared by the user when starting rclaude (-g/--agent) and
+  # arrives with the attach request — a bare name resolved via this server's
+  # PATH or an absolute path on this server. The attach lands directly in that
+  # agent and the whole session ends when it exits. There is still no shell
+  # fallback and no client-controlled argv.
   workspace_root: "/workspace"
   env_passthrough:
     - "TERM"

@@ -154,8 +154,13 @@ func (x *FileInfo) GetMode() uint32 {
 }
 
 type FileTree struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Files         []*FileInfo            `protobuf:"bytes,1,rep,name=files,proto3" json:"files,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Files []*FileInfo            `protobuf:"bytes,1,rep,name=files,proto3" json:"files,omitempty"`
+	// workspace_name 是 daemon 工作区（项目根目录）的目录名，仅在连接后的第一条
+	// bootstrap 消息中有效，服务端据此把该会话呈现为 /workspace/{user_id}/{workspace_name}/。
+	// 必须是单段安全路径（不含分隔符、"."/".."、控制字符），否则服务端拒绝连接。
+	// 会话中途重发的 FileTree 不得更改它，服务端忽略后续值。
+	WorkspaceName string `protobuf:"bytes,2,opt,name=workspace_name,json=workspaceName,proto3" json:"workspace_name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -195,6 +200,13 @@ func (x *FileTree) GetFiles() []*FileInfo {
 		return x.Files
 	}
 	return nil
+}
+
+func (x *FileTree) GetWorkspaceName() string {
+	if x != nil {
+		return x.WorkspaceName
+	}
+	return ""
 }
 
 type FileChange struct {
@@ -1239,9 +1251,10 @@ const file_remotefs_v1_remotefs_proto_rawDesc = "" +
 	"\x04size\x18\x02 \x01(\x03R\x04size\x12\x19\n" +
 	"\bmod_time\x18\x03 \x01(\x03R\amodTime\x12\x15\n" +
 	"\x06is_dir\x18\x04 \x01(\bR\x05isDir\x12\x12\n" +
-	"\x04mode\x18\x05 \x01(\rR\x04mode\"7\n" +
+	"\x04mode\x18\x05 \x01(\rR\x04mode\"^\n" +
 	"\bFileTree\x12+\n" +
-	"\x05files\x18\x01 \x03(\v2\x15.remotefs.v1.FileInfoR\x05files\"\x7f\n" +
+	"\x05files\x18\x01 \x03(\v2\x15.remotefs.v1.FileInfoR\x05files\x12%\n" +
+	"\x0eworkspace_name\x18\x02 \x01(\tR\rworkspaceName\"\x7f\n" +
 	"\n" +
 	"FileChange\x12+\n" +
 	"\x04type\x18\x01 \x01(\x0e2\x17.remotefs.v1.ChangeTypeR\x04type\x12)\n" +

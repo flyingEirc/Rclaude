@@ -32,10 +32,12 @@ type HarnessOptions struct {
 }
 
 type UserOptions struct {
-	UserID      string
-	DaemonRoot  string
-	MaxReadSize int64
-	Faults      FaultHooks
+	UserID     string
+	DaemonRoot string
+	// WorkspaceName 是 bootstrap 上报的项目目录名，缺省 "proj"。
+	WorkspaceName string
+	MaxReadSize   int64
+	Faults        FaultHooks
 }
 
 type FaultHooks struct {
@@ -75,10 +77,11 @@ type Harness struct {
 type UserHandle struct {
 	harness *Harness
 
-	Manager   *session.Manager
-	Session   *session.Session
-	UserID    string
-	DaemonDir string
+	Manager       *session.Manager
+	Session       *session.Session
+	UserID        string
+	WorkspaceName string
+	DaemonDir     string
 
 	stream *testutil.MockConnectStream
 	cancel context.CancelFunc
@@ -163,11 +166,18 @@ func (h *Harness) AddUser(opts UserOptions) *UserHandle {
 	})
 	require.NoError(h.t, err)
 
+	workspaceName := opts.WorkspaceName
+	if workspaceName == "" {
+		workspaceName = "proj"
+	}
+
 	current := h.Manager.NewSession(opts.UserID)
 	_, err = h.Manager.Register(current)
 	require.NoError(h.t, err)
 	require.NoError(h.t, current.Bootstrap(&remotefsv1.DaemonMessage{
-		Msg: &remotefsv1.DaemonMessage_FileTree{FileTree: &remotefsv1.FileTree{Files: tree}},
+		Msg: &remotefsv1.DaemonMessage_FileTree{
+			FileTree: &remotefsv1.FileTree{Files: tree, WorkspaceName: workspaceName},
+		},
 	}))
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -180,15 +190,16 @@ func (h *Harness) AddUser(opts UserOptions) *UserHandle {
 	}()
 
 	user := &UserHandle{
-		harness:    h,
-		Manager:    h.Manager,
-		Session:    current,
-		UserID:     opts.UserID,
-		DaemonDir:  daemonRoot,
-		stream:     stream,
-		cancel:     cancel,
-		serveErrCh: errCh,
-		faults:     opts.Faults,
+		harness:       h,
+		Manager:       h.Manager,
+		Session:       current,
+		UserID:        opts.UserID,
+		WorkspaceName: workspaceName,
+		DaemonDir:     daemonRoot,
+		stream:        stream,
+		cancel:        cancel,
+		serveErrCh:    errCh,
+		faults:        opts.Faults,
 	}
 	user.loopDoneCh = startHandleLoop(ctx, user, syncer.HandleOptions{
 		Root:            daemonRoot,

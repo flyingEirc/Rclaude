@@ -83,6 +83,7 @@ func TestAttachOverGRPC_LinuxSmoke_PTYReadsDaemonBackedFUSEFile(t *testing.T) {
 		Attach: ptyclient.AttachParams{
 			InitialSize: ptyclient.WindowSize{Cols: 80, Rows: 24},
 			Term:        "xterm-256color",
+			Agent:       "/bin/sh",
 		},
 		FrameMax: int(config.DefaultPTYFrameMaxBytes),
 	})
@@ -94,7 +95,7 @@ func TestAttachOverGRPC_LinuxSmoke_PTYReadsDaemonBackedFUSEFile(t *testing.T) {
 
 	out := stdout.String()
 	assert.Contains(t, out, "__RCLAUDE_INTEGRATED_PTY__")
-	assert.Contains(t, out, filepath.Join(mountpoint, user.UserID))
+	assert.Contains(t, out, filepath.Join(mountpoint, user.UserID, user.WorkspaceName))
 	assert.Contains(t, out, "hello from daemon workspace")
 	assert.Equal(t, inmemtest.RequestSnapshot{Kind: "read", Path: "README.md"}, user.LastRequest())
 }
@@ -105,7 +106,6 @@ func newRealPTYService(t *testing.T, manager *session.Manager, workspaceRoot str
 	svc, err := ptyservice.New(ptyservice.Config{
 		Registry:     integratedRegistry{manager: manager},
 		Spawner:      realPTYSpawner{},
-		Binary:       "/bin/sh",
 		Workspace:    workspaceRoot,
 		EnvWhitelist: append([]string(nil), config.DefaultPTYEnvPassthrough...),
 		FrameMax:     config.DefaultPTYFrameMaxBytes,

@@ -36,6 +36,8 @@ type PTYHarnessOptions struct {
 	DaemonToken string
 
 	WorkspaceRoot string
+	// WorkspaceName 是 daemon bootstrap 上报的项目目录名，缺省 "proj"。
+	WorkspaceName string
 	Spawner       ptyservice.Spawner
 	AttachLimit   ptyservice.AttachLimiter
 	InputLimit    ptyservice.InputLimiter
@@ -54,6 +56,7 @@ type PTYHarness struct {
 	PTY           *ptyservice.Service
 	Server        *testutil.GRPCBufconnServer
 	WorkspaceRoot string
+	WorkspaceName string
 	UserID        string
 	ClientToken   string
 	DaemonToken   string
@@ -118,13 +121,14 @@ func NewPTYHarness(t testing.TB, opts PTYHarnessOptions) *PTYHarness {
 	if workspaceRoot == "" {
 		workspaceRoot = t.TempDir()
 	}
-	require.NoError(t, os.MkdirAll(filepath.Join(workspaceRoot, userID), 0o750))
+	workspaceName := opts.WorkspaceName
+	if workspaceName == "" {
+		workspaceName = "proj"
+	}
+	require.NoError(t, os.MkdirAll(filepath.Join(workspaceRoot, userID, workspaceName), 0o750))
 
 	manager := session.NewManager()
 	sessionService, err := session.NewService(manager)
-	require.NoError(t, err)
-
-	binary, err := os.Executable()
 	require.NoError(t, err)
 
 	ptyService, err := ptyservice.New(ptyservice.Config{
@@ -132,7 +136,6 @@ func NewPTYHarness(t testing.TB, opts PTYHarnessOptions) *PTYHarness {
 		Spawner:      opts.Spawner,
 		AttachLimit:  opts.AttachLimit,
 		InputLimit:   opts.InputLimit,
-		Binary:       binary,
 		Workspace:    workspaceRoot,
 		EnvWhitelist: append([]string(nil), config.DefaultPTYEnvPassthrough...),
 		FrameMax:     opts.FrameMax,
@@ -156,6 +159,7 @@ func NewPTYHarness(t testing.TB, opts PTYHarnessOptions) *PTYHarness {
 		PTY:           ptyService,
 		Server:        server,
 		WorkspaceRoot: workspaceRoot,
+		WorkspaceName: workspaceName,
 		UserID:        userID,
 		ClientToken:   clientToken,
 		DaemonToken:   daemonToken,
@@ -199,7 +203,7 @@ func (h *PTYHarness) ConnectDaemon(ctx context.Context, files ...*remotefsv1.Fil
 	require.NoError(h.t, err)
 	require.NoError(h.t, stream.Send(&remotefsv1.DaemonMessage{
 		Msg: &remotefsv1.DaemonMessage_FileTree{
-			FileTree: &remotefsv1.FileTree{Files: files},
+			FileTree: &remotefsv1.FileTree{Files: files, WorkspaceName: h.WorkspaceName},
 		},
 	}))
 
@@ -420,12 +424,15 @@ type managerPTYRegistry struct {
 	manager *session.Manager
 }
 
-func (r managerPTYRegistry) LookupDaemon(userID string) bool {
+func (r managerPTYRegistry) LookupDaemon(userID string) (string, bool) {
 	if r.manager == nil {
-		return false
+		return "", false
 	}
-	_, ok := r.manager.LookupDaemon(userID)
-	return ok
+	daemon, ok := r.manager.LookupDaemon(userID)
+	if !ok {
+		return "", false
+	}
+	return daemon.WorkspaceName(), true
 }
 
 func (r managerPTYRegistry) RegisterPTY(userID string) (string, bool, error) {

@@ -1,7 +1,8 @@
 // Command rclaude is the unified local entry: it starts the daemon and the
-// remote claude PTY attach concurrently, coordinating startup failures over
-// an in-process event bus (pkg/startup). The terminal only ever shows one
-// status line per component; everything else goes to the log file.
+// remote agent PTY attach concurrently, coordinating startup failures over
+// an in-process event bus (pkg/startup). The agent program the remote session
+// runs is declared on the command line (-g/--agent). The terminal only ever
+// shows one status line per component; everything else goes to the log file.
 package main
 
 import (
@@ -10,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -58,29 +60,43 @@ func exitOnError(err error) {
 
 func newRootCommand() (*cobra.Command, error) {
 	var configPath string
+	var agent string
 
 	cmd := &cobra.Command{
-		Use:           "rclaude",
-		Short:         "Start the local daemon and attach to the remote claude PTY session",
+		Use:           "rclaude -g <agent> -c <config>",
+		Short:         "Start the local daemon and attach to the remote agent PTY session",
 		Args:          cobra.NoArgs,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runUnified(cmd.Context(), configPath)
+			if strings.TrimSpace(agent) == "" {
+				return errors.New("rclaude: --agent must not be blank (e.g. -g claude, -g codex)")
+			}
+			return runUnified(cmd.Context(), configPath, agent)
 		},
 	}
-	cmd.Flags().StringVar(&configPath, "config", "", "Path to the daemon YAML config")
-	if err := cmd.MarkFlagRequired("config"); err != nil {
-		return nil, fmt.Errorf("rclaude: mark config flag required: %w", err)
+	cmd.Flags().StringVarP(&configPath, "config", "c", "", "Path to the daemon YAML config")
+	cmd.Flags().StringVarP(&agent, "agent", "g", "",
+		"Agent program the remote session runs: a bare name resolved via the server's PATH (e.g. claude, codex) or an absolute path on the server")
+	for _, flag := range []string{"config", "agent"} {
+		if err := cmd.MarkFlagRequired(flag); err != nil {
+			return nil, fmt.Errorf("rclaude: mark %s flag required: %w", flag, err)
+		}
 	}
 
 	return cmd, nil
 }
 
-func runUnified(ctx context.Context, configPath string) error {
+func runUnified(ctx context.Context, configPath string, agent string) error {
 	cfg, err := config.LoadDaemon(configPath)
 	if err != nil {
 		return err
+	}
+	// 启动目录即工作区根：rclaude 必须在项目根目录运行，该目录名成为服务端
+	// /workspace/{userid}/{项目名}/ 中的项目名。
+	workspaceRoot, err := syncer.ResolveWorkspaceRoot()
+	if err != nil {
+		return fmt.Errorf("%w\nrun rclaude from your project root directory", err)
 	}
 	logger, err := logx.New(logx.Options{
 		Level:      cfg.Log.Level,
@@ -105,7 +121,7 @@ func runUnified(ctx context.Context, configPath string) error {
 	stopWatch := watchShutdownSignals(logger, cancel)
 	defer stopWatch()
 
-	return runCoordinated(ctx, cfg, configPath, logger)
+	return runCoordinated(ctx, cfg, workspaceRoot, configPath, agent, logger)
 }
 
 // shutdownSignals lists the signals that trigger a graceful shutdown: SIGINT
@@ -163,7 +179,9 @@ func forceExitOnSecondSignal(logger logx.Logger, sigCh <-chan os.Signal, done <-
 func runCoordinated(
 	ctx context.Context,
 	cfg *config.DaemonConfig,
+	workspaceRoot string,
 	configPath string,
+	agent string,
 	logger logx.Logger,
 ) error {
 	coord, err := startup.New(startup.Options{
@@ -171,7 +189,7 @@ func runCoordinated(
 		Logger:     logger,
 		MaxRetries: cfg.Startup.MaxRetries,
 		RetryDelay: cfg.Startup.RetryDelay,
-	}, daemonSpec(cfg, logger), ptySpec(configPath))
+	}, daemonSpec(cfg, workspaceRoot, logger), ptySpec(configPath, agent))
 	if err != nil {
 		return err
 	}
@@ -186,12 +204,13 @@ func runCoordinated(
 	return supervise(events, cancel, logger, os.Stdout)
 }
 
-func daemonSpec(cfg *config.DaemonConfig, logger logx.Logger) startup.Spec {
+func daemonSpec(cfg *config.DaemonConfig, workspaceRoot string, logger logx.Logger) startup.Spec {
 	return startup.Spec{
 		Name: startup.ComponentDaemon,
 		Run: func(ctx context.Context, ready func()) error {
 			return syncer.Run(ctx, syncer.RunOptions{
 				Config:          cfg,
+				WorkspaceRoot:   workspaceRoot,
 				Logger:          logger,
 				OnReady:         ready,
 				StartupFailFast: true,
@@ -200,7 +219,7 @@ func daemonSpec(cfg *config.DaemonConfig, logger logx.Logger) startup.Spec {
 	}
 }
 
-func ptySpec(configPath string) startup.Spec {
+func ptySpec(configPath string, agent string) startup.Spec {
 	return startup.Spec{
 		Name: startup.ComponentPTY,
 		// The PTY can only attach once the daemon has registered with the
@@ -210,6 +229,7 @@ func ptySpec(configPath string) startup.Spec {
 		Run: func(ctx context.Context, ready func()) error {
 			return ptyattach.Run(ctx, ptyattach.Options{
 				ConfigPath: configPath,
+				Agent:      agent,
 				OnAttached: ready,
 			})
 		},

@@ -20,22 +20,17 @@ const (
 	DefaultPrefetchEnabled              = true
 	DefaultPrefetchMaxFileBytes   int64 = 100 * 1024
 	DefaultPrefetchMaxFilesPerDir       = 16
-	// DefaultPTYBinary is empty on purpose: an unset pty.binary makes the
-	// server spawn the user's interactive login shell (see ptyhost.LoginShell)
-	// so the passthrough is a working terminal rather than a server-pinned
-	// tool. Set pty.binary explicitly to pin a program (e.g. claude/codex).
-	DefaultPTYBinary                 = ""
-	DefaultPTYWorkspaceRoot          = "/workspace"
-	DefaultPTYFrameMaxBytes    int64 = 64 * 1024
-	DefaultPTYGracefulShutdown       = 5 * time.Second
-	DefaultPTYAttachQPS              = 1
-	DefaultPTYAttachBurst            = 3
-	DefaultPTYStdinBPS         int64 = 1 << 20
-	DefaultPTYStdinBurst       int64 = 256 * 1024
-	DefaultAuditTable                = "file_audit_log"
-	DefaultAuditQueueSize            = 256
-	DefaultStartupMaxRetries         = 3
-	DefaultStartupRetryDelay         = time.Second
+	DefaultPTYWorkspaceRoot             = "/workspace"
+	DefaultPTYFrameMaxBytes       int64 = 64 * 1024
+	DefaultPTYGracefulShutdown          = 5 * time.Second
+	DefaultPTYAttachQPS                 = 1
+	DefaultPTYAttachBurst               = 3
+	DefaultPTYStdinBPS            int64 = 1 << 20
+	DefaultPTYStdinBurst          int64 = 256 * 1024
+	DefaultAuditTable                   = "file_audit_log"
+	DefaultAuditQueueSize               = 256
+	DefaultStartupMaxRetries            = 3
+	DefaultStartupRetryDelay            = time.Second
 	// gRPC keepalive：客户端与服务端周期性发 HTTP/2 PING，一是保活路径上的
 	// NAT/防火墙映射（PTY 可长时间空闲，实测 40~60 分钟会被中间设备掐断），
 	// 二是让两端在 Time+Timeout 内探测到死连接并走既有清理路径。
@@ -53,7 +48,6 @@ const (
 var (
 	DefaultPTYEnvPassthrough    = []string{"TERM", "LANG", "LC_ALL", "LC_CTYPE", "PATH", "HOME", "SHELL", "CLAUDE_CONFIG_DIR"}
 	ErrEmptyServerAddress       = errors.New("config: server.address is required")
-	ErrWorkspacePathNotAbs      = errors.New("config: workspace.path must be absolute")
 	ErrEmptyListen              = errors.New("config: listen is required")
 	ErrEmptyTokens              = errors.New("config: auth.tokens must contain at least one entry")
 	ErrMountpointNotAbs         = errors.New("config: fuse.mountpoint must be absolute")
@@ -62,7 +56,6 @@ var (
 	ErrPTYWorkspaceRootNotAbs   = errors.New("config: pty.workspace_root must be absolute")
 	ErrPTYFrameMaxBytesNegative = errors.New("config: pty.frame_max_bytes must be > 0")
 	ErrPTYRateLimitNegative     = errors.New("config: pty.ratelimit values must be >= 0")
-	ErrPTYPredictInvalid        = errors.New("config: pty.predict must be adaptive, always, or off")
 	ErrAuditDriverInvalid       = errors.New("config: audit.driver must be one of sqlite/mysql/postgres")
 	ErrAuditDSNRequired         = errors.New("config: audit.dsn is required when audit.enabled is true")
 	ErrAuditTableInvalid        = errors.New("config: audit.table may only contain letters, digits and underscores")
@@ -103,8 +96,9 @@ type ServerTLSConfig struct {
 	InsecureSkipVerify bool `mapstructure:"insecure_skip_verify"`
 }
 
+// Workspace 只承载同步行为选项。工作区根目录不再来自配置：daemon 必须在
+// 项目根目录启动，启动时的 cwd 即工作区根（见 syncer.ResolveWorkspaceRoot）。
 type Workspace struct {
-	Path              string   `mapstructure:"path"`
 	Exclude           []string `mapstructure:"exclude"`
 	SensitivePatterns []string `mapstructure:"sensitive_patterns"`
 }
@@ -157,10 +151,6 @@ type AuditConfig struct {
 
 type DaemonPTYConfig struct {
 	FrameMaxBytes int64 `mapstructure:"frame_max_bytes"`
-	// Predict selects the predictive local-echo mode for the attach client:
-	// "adaptive" (default, show predictions only on slow links), "always",
-	// or "off" (plain passthrough).
-	Predict string `mapstructure:"predict"`
 }
 
 type AuthConfig struct {
@@ -188,9 +178,9 @@ type PTYRateLimitConfig struct {
 	StdinBurst  int64 `mapstructure:"stdin_burst"`
 }
 
+// PTYConfig 只约束 PTY 会话的运行环境。要运行哪个 agent 程序不在服务端配置：
+// 由用户启动 rclaude 时以 -g/--agent 声明，随 AttachReq.agent 下发。
 type PTYConfig struct {
-	Binary                  string             `mapstructure:"binary"`
-	Args                    []string           `mapstructure:"args"`
 	WorkspaceRoot           string             `mapstructure:"workspace_root"`
 	EnvPassthrough          []string           `mapstructure:"env_passthrough"`
 	FrameMaxBytes           int64              `mapstructure:"frame_max_bytes"`
@@ -236,9 +226,6 @@ func (c *DaemonConfig) Validate() error {
 	if strings.TrimSpace(c.Server.Address) == "" {
 		return ErrEmptyServerAddress
 	}
-	if !filepath.IsAbs(c.Workspace.Path) {
-		return ErrWorkspacePathNotAbs
-	}
 	if c.RateLimit.ReadBytesPerSec < 0 {
 		return ErrNegativeReadRate
 	}
@@ -251,24 +238,10 @@ func (c *DaemonConfig) Validate() error {
 	if c.PTY.FrameMaxBytes <= 0 {
 		return ErrPTYFrameMaxBytesNegative
 	}
-	if !isValidPTYPredict(c.PTY.Predict) {
-		return ErrPTYPredictInvalid
-	}
 	if err := c.validateStartup(); err != nil {
 		return err
 	}
 	return c.validateAudit()
-}
-
-// isValidPTYPredict accepts the predictive-echo modes understood by
-// pkg/ptypredict; empty means the adaptive default.
-func isValidPTYPredict(mode string) bool {
-	switch mode {
-	case "", "adaptive", "always", "off":
-		return true
-	default:
-		return false
-	}
 }
 
 func (c *DaemonConfig) validateStartup() error {
@@ -391,7 +364,6 @@ func defaultServerConfig() ServerConfig {
 			MaxFilesPerDir: DefaultPrefetchMaxFilesPerDir,
 		},
 		PTY: PTYConfig{
-			Binary:                  DefaultPTYBinary,
 			WorkspaceRoot:           DefaultPTYWorkspaceRoot,
 			EnvPassthrough:          append([]string(nil), DefaultPTYEnvPassthrough...),
 			FrameMaxBytes:           DefaultPTYFrameMaxBytes,

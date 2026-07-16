@@ -33,6 +33,7 @@ func TestRun_StartupFailFastReturnsFirstError(t *testing.T) {
 
 	err := Run(ctx, RunOptions{
 		Config:          testDaemonConfig(root, "passthrough:///failfast", "token"),
+		WorkspaceRoot:   root,
 		Logger:          logx.Nop(),
 		Dialer:          dialer,
 		StartupFailFast: true,
@@ -63,6 +64,7 @@ func TestRun_OnReadyFiresOnceOnFirstSession(t *testing.T) {
 	go func() {
 		errCh <- Run(ctx, RunOptions{
 			Config:          testDaemonConfig(root, "passthrough:///onready", "token"),
+			WorkspaceRoot:   root,
 			Logger:          logx.Nop(),
 			Dialer:          dialer,
 			OnReady:         func() { readyCount.Add(1) },

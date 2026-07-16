@@ -339,7 +339,7 @@ func TestRunCommandMapsSpawnFailedServerErrorToActionableExitStatus(t *testing.T
 		termName: "xterm-256color",
 	}
 
-	go stream.pushError(remotefsv1.Error_KIND_SPAWN_FAILED, `resolve pty binary "claude": ptyhost: binary not found in PATH`)
+	go stream.pushError(remotefsv1.Error_KIND_SPAWN_FAILED, `resolve agent "claude": ptyhost: binary not found in PATH`)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -350,10 +350,10 @@ func TestRunCommandMapsSpawnFailedServerErrorToActionableExitStatus(t *testing.T
 	var exitErr *ExitError
 	require.ErrorAs(t, err, &exitErr)
 	assert.Equal(t, 4, exitErr.Code)
-	assert.Contains(t, exitErr.Message, "failed to start remote claude process on Server")
-	assert.Contains(t, exitErr.Message, `resolve pty binary "claude"`)
-	assert.Contains(t, exitErr.Message, "pty.binary")
-	assert.Contains(t, exitErr.Message, "Server-side Claude login")
+	assert.Contains(t, exitErr.Message, "failed to start remote agent process on Server")
+	assert.Contains(t, exitErr.Message, `resolve agent "claude"`)
+	assert.Contains(t, exitErr.Message, "-g/--agent")
+	assert.Contains(t, exitErr.Message, "Server-side agent login")
 }
 
 func TestLoadClientConfigUsesServerToken(t *testing.T) {

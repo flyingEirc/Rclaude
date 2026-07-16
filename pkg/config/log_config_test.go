@@ -14,8 +14,6 @@ func TestLoadDaemonLogFileSettings(t *testing.T) {
 	body := `
 server:
   address: "example.com:9000"
-workspace:
-  path: ` + escapeYAML(absWorkspace()) + `
 log:
   level: "debug"
   format: "json"
@@ -40,8 +38,6 @@ func TestLoadDaemonLogDefaultsEmpty(t *testing.T) {
 	body := `
 server:
   address: "example.com:9000"
-workspace:
-  path: ` + escapeYAML(absWorkspace()) + `
 `
 	path := writeYAML(t, "daemon.yaml", body)
 	cfg, err := config.LoadDaemon(path)

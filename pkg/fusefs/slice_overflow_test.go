@@ -36,21 +36,21 @@ func TestForgetReleasesInode(t *testing.T) {
 	t.Parallel()
 	a := newInodeAllocator()
 
-	file := a.stableAttr("alice", "d/x", &remotefsv1.FileInfo{IsDir: false})
-	dir := a.stableAttr("alice", "d", &remotefsv1.FileInfo{IsDir: true})
+	file := a.stableAttr("alice", "proj", "d/x", &remotefsv1.FileInfo{IsDir: false})
+	dir := a.stableAttr("alice", "proj", "d", &remotefsv1.FileInfo{IsDir: true})
 	require.NotZero(t, file.Ino)
 	require.NotZero(t, dir.Ino)
 	require.Len(t, a.byPath, 2)
 
-	a.forget("alice", "d/x")
+	a.forget("alice", "proj", "d/x")
 	assert.Len(t, a.byPath, 1, "文件路径的 inode 记录应被回收")
 
-	a.forget("alice", "d")
+	a.forget("alice", "proj", "d")
 	assert.Empty(t, a.byPath, "目录路径的 inode 记录应被回收")
 
 	// forget 幂等：重复调用与不存在路径均安全。
 	require.NotPanics(t, func() {
-		a.forget("alice", "d")
-		a.forget("bob", "never")
+		a.forget("alice", "proj", "d")
+		a.forget("bob", "proj", "never")
 	})
 }

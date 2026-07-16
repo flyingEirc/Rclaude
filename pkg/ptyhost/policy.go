@@ -2,7 +2,6 @@ package ptyhost
 
 import (
 	"errors"
-	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
@@ -15,67 +14,32 @@ import (
 
 var (
 	ErrUnsafeUserID        = errors.New("ptyhost: user id contains unsafe characters or path elements")
+	ErrUnsafeWorkspace     = errors.New("ptyhost: workspace name contains unsafe characters or path elements")
 	ErrWorkspaceRootNotAbs = errors.New("ptyhost: workspace root must be an absolute path")
 	ErrBinaryEmpty         = errors.New("ptyhost: binary name is empty")
 	ErrBinaryNotFound      = errors.New("ptyhost: binary not found in PATH")
-	ErrShellNotFound       = errors.New("ptyhost: no interactive login shell found")
+	ErrBinaryUnsafe        = errors.New("ptyhost: binary must be a bare program name or an absolute path")
 )
 
-// LoginShell resolves the interactive login shell to spawn when no explicit PTY
-// binary is configured. It prefers $SHELL, then common shells on PATH, and
-// returns the absolute shell path together with the login-shell argv. This is
-// what makes the passthrough a working terminal the user can ls/cd in and from
-// which they can launch claude/codex, rather than a server-pinned binary.
-func LoginShell() (string, []string, error) {
-	for _, candidate := range shellCandidates() {
-		if resolved, ok := resolveExecutable(candidate); ok {
-			return resolved, []string{"-l"}, nil
-		}
-	}
-	return "", nil, ErrShellNotFound
-}
-
-func shellCandidates() []string {
-	return []string{
-		os.Getenv("SHELL"),
-		"bash",
-		"zsh",
-		"sh",
-		"/bin/bash",
-		"/bin/sh",
-	}
-}
-
-func resolveExecutable(name string) (string, bool) {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return "", false
-	}
-	resolved, err := exec.LookPath(name)
-	if err != nil {
-		return "", false
-	}
-	return resolved, true
-}
-
-// ResolveCwd returns the absolute working directory under the workspace root
-// for the given user id, with traversal protection.
-func ResolveCwd(workspaceRoot, userID string) (string, error) {
+// ResolveCwd returns the absolute working directory
+// {workspaceRoot}/{userID}/{workspace} for one PTY session, with traversal
+// protection on both segments. workspace is the daemon-reported project
+// directory name.
+func ResolveCwd(workspaceRoot, userID, workspace string) (string, error) {
 	if workspaceRoot == "" {
 		return "", ErrWorkspaceRootNotAbs
 	}
 
-	trimmedUserID := strings.TrimSpace(userID)
-	if trimmedUserID == "" || strings.ContainsAny(trimmedUserID, `/\`) {
+	cleanedUserID, err := safepath.CleanSegment(userID)
+	if err != nil {
 		return "", ErrUnsafeUserID
 	}
-
-	cleanedUserID, err := safepath.Clean(trimmedUserID)
-	if err != nil || cleanedUserID == "" || cleanedUserID != trimmedUserID {
-		return "", ErrUnsafeUserID
+	cleanedWorkspace, err := safepath.CleanSegment(workspace)
+	if err != nil {
+		return "", ErrUnsafeWorkspace
 	}
 
-	cwd, err := safepath.Join(workspaceRoot, cleanedUserID)
+	cwd, err := safepath.Join(workspaceRoot, cleanedUserID+"/"+cleanedWorkspace)
 	if err == nil {
 		return cwd, nil
 	}
@@ -150,7 +114,10 @@ func envKeyAllowed(key string, exact map[string]struct{}, patterns []string) boo
 }
 
 // ResolveBinary returns an absolute path to the given binary name. Absolute
-// paths are returned unchanged. Bare names are looked up via PATH.
+// paths are returned unchanged. Bare names are looked up via PATH. Relative
+// paths containing separators are rejected: the name comes over the wire from
+// the attach request, and LookPath would otherwise resolve it against the
+// server process cwd.
 func ResolveBinary(name string) (string, error) {
 	trimmed := strings.TrimSpace(name)
 	if trimmed == "" {
@@ -159,6 +126,10 @@ func ResolveBinary(name string) (string, error) {
 
 	if isAbsoluteBinaryPath(trimmed) {
 		return trimmed, nil
+	}
+
+	if strings.ContainsAny(trimmed, `/\`) {
+		return "", ErrBinaryUnsafe
 	}
 
 	path, err := exec.LookPath(trimmed)

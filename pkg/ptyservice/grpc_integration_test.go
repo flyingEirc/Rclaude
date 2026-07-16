@@ -146,7 +146,6 @@ func newIntegratedPTYService(
 	svc, err := ptyservice.New(ptyservice.Config{
 		Registry:     integratedRegistry{manager: manager},
 		Spawner:      spawner,
-		Binary:       testBinary(t),
 		Workspace:    testWorkspaceRoot(),
 		EnvWhitelist: append([]string(nil), config.DefaultPTYEnvPassthrough...),
 		FrameMax:     64,
@@ -182,7 +181,7 @@ func newLiveManager(t *testing.T, userID string) *session.Manager {
 	manager := session.NewManager()
 	current := manager.NewSession(userID)
 	require.NoError(t, current.Bootstrap(&remotefsv1.DaemonMessage{
-		Msg: &remotefsv1.DaemonMessage_FileTree{FileTree: &remotefsv1.FileTree{}},
+		Msg: &remotefsv1.DaemonMessage_FileTree{FileTree: &remotefsv1.FileTree{WorkspaceName: "proj"}},
 	}))
 	_, err := manager.Register(current)
 	require.NoError(t, err)
@@ -193,9 +192,12 @@ type integratedRegistry struct {
 	manager *session.Manager
 }
 
-func (r integratedRegistry) LookupDaemon(userID string) bool {
-	_, ok := r.manager.LookupDaemon(userID)
-	return ok
+func (r integratedRegistry) LookupDaemon(userID string) (string, bool) {
+	daemon, ok := r.manager.LookupDaemon(userID)
+	if !ok {
+		return "", false
+	}
+	return daemon.WorkspaceName(), true
 }
 
 func (r integratedRegistry) RegisterPTY(userID string) (string, bool, error) {

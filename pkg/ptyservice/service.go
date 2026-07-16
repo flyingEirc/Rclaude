@@ -26,6 +26,7 @@ var (
 	ErrMissingUserID    = errors.New("ptyservice: missing user id in context")
 	ErrNilRegistry      = errors.New("ptyservice: nil registry")
 	ErrNilSpawner       = errors.New("ptyservice: nil spawner")
+	ErrAgentRequired    = errors.New("ptyservice: attach did not declare an agent, start rclaude with -g/--agent")
 	ErrNilHost          = errors.New("ptyservice: nil host")
 	ErrFrameTooLarge    = errors.New("ptyservice: client frame exceeds max bytes")
 	ErrFirstFrameAttach = errors.New("ptyservice: first client frame must be attach")
@@ -33,7 +34,9 @@ var (
 )
 
 type Registry interface {
-	LookupDaemon(userID string) bool
+	// LookupDaemon reports whether the user's daemon is connected and, if so,
+	// the workspace (project) name its session was bootstrapped with.
+	LookupDaemon(userID string) (workspaceName string, ok bool)
 	RegisterPTY(userID string) (sessionID string, ok bool, err error)
 	UnregisterPTY(userID, sessionID string)
 }
@@ -58,13 +61,14 @@ type InputLimiter interface {
 	Wait(ctx context.Context, userID string, n int) error
 }
 
+// Config wires the service to its collaborators. The agent program a session
+// runs is not part of it: each attach declares its own agent (AttachReq.agent,
+// from the rclaude -g flag), resolved per attach in prepareSpawn.
 type Config struct {
 	Registry     Registry
 	Spawner      Spawner
 	AttachLimit  AttachLimiter
 	InputLimit   InputLimiter
-	Binary       string
-	Args         []string
 	Workspace    string
 	EnvWhitelist []string
 	FrameMax     int64
@@ -85,8 +89,6 @@ func New(cfg Config) (*Service, error) {
 	if cfg.Spawner == nil {
 		return nil, ErrNilSpawner
 	}
-	// An empty cfg.Binary is intentional: prepareSpawn then defaults to the
-	// user's interactive login shell instead of a server-pinned program.
 	if cfg.Workspace == "" {
 		cfg.Workspace = config.DefaultPTYWorkspaceRoot
 	}
@@ -102,7 +104,6 @@ func New(cfg Config) (*Service, error) {
 	if cfg.Logger == nil {
 		cfg.Logger = logx.Nop()
 	}
-	cfg.Args = append([]string(nil), cfg.Args...)
 	return &Service{cfg: cfg}, nil
 }
 
@@ -117,7 +118,7 @@ func (s *Service) attach(stream grpcBidiStream) error {
 	}
 	s.logAttachRequested(userID, attach)
 
-	sessionID, err := s.reserveSession(stream, userID)
+	sessionID, workspace, err := s.reserveSession(stream, userID)
 	if err != nil {
 		return normalizeApplicationStop(err)
 	}
@@ -127,13 +128,12 @@ func (s *Service) attach(stream grpcBidiStream) error {
 		return normalizeApplicationStop(limitErr)
 	}
 
-	host, cwd, err := s.startHost(stream, userID, attach)
+	host, cwd, err := s.startHost(stream, userID, workspace, attach)
 	if err != nil {
 		return normalizeApplicationStop(err)
 	}
 
-	predictive := attach.GetPredictiveEcho()
-	if err := sendAttachedFrame(stream, sessionID, cwd, predictive); err != nil {
+	if err := sendAttachedFrame(stream, sessionID); err != nil {
 		cleanupHost(host)
 		return err
 	}
@@ -141,10 +141,9 @@ func (s *Service) attach(stream grpcBidiStream) error {
 		"user_id", userID,
 		"session_id", sessionID,
 		"cwd", cwd,
-		"predictive_echo", predictive,
 	)
 
-	return s.runAttached(stream, userID, sessionID, host, predictive)
+	return s.runAttached(stream, userID, sessionID, host)
 }
 
 func receiveAttachRequest(stream grpcBidiStream) (string, *remotefsv1.AttachReq, error) {
@@ -164,22 +163,23 @@ func receiveAttachRequest(stream grpcBidiStream) (string, *remotefsv1.AttachReq,
 	return userID, attach, nil
 }
 
-func (s *Service) reserveSession(stream grpcBidiStream, userID string) (string, error) {
-	if !s.cfg.Registry.LookupDaemon(userID) {
+func (s *Service) reserveSession(stream grpcBidiStream, userID string) (string, string, error) {
+	workspace, connected := s.cfg.Registry.LookupDaemon(userID)
+	if !connected {
 		s.logAttachRejected(userID, "daemon_not_connected", nil)
-		return "", applicationError(stream, remotefsv1.Error_KIND_DAEMON_NOT_CONNECTED, "daemon not connected")
+		return "", "", applicationError(stream, remotefsv1.Error_KIND_DAEMON_NOT_CONNECTED, "daemon not connected")
 	}
 
 	sessionID, ok, err := s.cfg.Registry.RegisterPTY(userID)
 	if err != nil {
 		s.logAttachRejected(userID, "registry_error", err)
-		return "", applicationError(stream, remotefsv1.Error_KIND_INTERNAL, err.Error())
+		return "", "", applicationError(stream, remotefsv1.Error_KIND_INTERNAL, err.Error())
 	}
 	if !ok {
 		s.logAttachRejected(userID, "session_busy", nil)
-		return "", applicationError(stream, remotefsv1.Error_KIND_SESSION_BUSY, "pty session already attached")
+		return "", "", applicationError(stream, remotefsv1.Error_KIND_SESSION_BUSY, "pty session already attached")
 	}
-	return sessionID, nil
+	return sessionID, workspace, nil
 }
 
 func (s *Service) enforceAttachLimit(stream grpcBidiStream, userID string) error {
@@ -194,10 +194,11 @@ func (s *Service) enforceAttachLimit(stream grpcBidiStream, userID string) error
 	return nil
 }
 
-// spawnPlan is the fully resolved command the PTY host will exec.
+// spawnPlan is the fully resolved command the PTY host will exec. There is no
+// argv beyond the program itself: the client only ever declares which agent
+// to run, never its arguments.
 type spawnPlan struct {
 	binary string
-	args   []string
 	cwd    string
 	env    []string
 }
@@ -205,13 +206,14 @@ type spawnPlan struct {
 func (s *Service) startHost(
 	stream grpcBidiStream,
 	userID string,
+	workspace string,
 	attach *remotefsv1.AttachReq,
 ) (Host, string, error) {
-	plan, err := s.prepareSpawn(userID, attach)
+	plan, err := s.prepareSpawn(userID, workspace, attach)
 	if err != nil {
 		s.cfg.Logger.Warn("pty spawn failed",
 			"user_id", userID,
-			"binary", s.binaryLabel(),
+			"agent", attach.GetAgent(),
 			"err", err,
 		)
 		return nil, "", applicationError(stream, remotefsv1.Error_KIND_SPAWN_FAILED, err.Error())
@@ -220,12 +222,10 @@ func (s *Service) startHost(
 	s.cfg.Logger.Info("pty spawn starting",
 		"user_id", userID,
 		"binary", plan.binary,
-		"args_count", len(plan.args),
 		"cwd", plan.cwd,
 	)
 	host, err := s.cfg.Spawner.Spawn(ptyhost.SpawnReq{
 		Binary:          plan.binary,
-		Args:            plan.args,
 		Cwd:             plan.cwd,
 		Env:             plan.env,
 		InitSize:        fromProtoSize(attach.GetInitialSize()),
@@ -246,47 +246,37 @@ func (s *Service) logSpawnFailed(userID string, plan spawnPlan, err error) {
 	s.cfg.Logger.Warn("pty spawn failed",
 		"user_id", userID,
 		"binary", plan.binary,
-		"args_count", len(plan.args),
 		"cwd", plan.cwd,
 		"err", err,
 	)
 }
 
-func (s *Service) prepareSpawn(userID string, attach *remotefsv1.AttachReq) (spawnPlan, error) {
-	binary, args, err := s.resolveCommand()
+func (s *Service) prepareSpawn(userID, workspace string, attach *remotefsv1.AttachReq) (spawnPlan, error) {
+	binary, err := resolveAgent(attach.GetAgent())
 	if err != nil {
 		return spawnPlan{}, err
 	}
-	cwd, err := ptyhost.ResolveCwd(s.cfg.Workspace, userID)
+	cwd, err := ptyhost.ResolveCwd(s.cfg.Workspace, userID, workspace)
 	if err != nil {
 		return spawnPlan{}, err
 	}
 	env := ptyhost.BuildEnv(envMap(os.Environ()), s.cfg.EnvWhitelist, attach.GetTerm())
-	return spawnPlan{binary: binary, args: args, cwd: cwd, env: env}, nil
+	return spawnPlan{binary: binary, cwd: cwd, env: env}, nil
 }
 
-// resolveCommand returns the binary and argv to spawn. With no configured
-// binary it defaults to the user's interactive login shell so the passthrough
-// is a working terminal (ls/cd, launch claude/codex) instead of a
-// server-pinned tool.
-func (s *Service) resolveCommand() (string, []string, error) {
-	if strings.TrimSpace(s.cfg.Binary) == "" {
-		return ptyhost.LoginShell()
+// resolveAgent returns the program to spawn for the attach-declared agent.
+// There is no shell fallback: the declared agent is the only thing a session
+// can run, and ptyhost.ResolveBinary confines the name to a bare PATH lookup
+// or an absolute server path.
+func resolveAgent(agent string) (string, error) {
+	if strings.TrimSpace(agent) == "" {
+		return "", ErrAgentRequired
 	}
-	binary, err := ptyhost.ResolveBinary(s.cfg.Binary)
+	binary, err := ptyhost.ResolveBinary(agent)
 	if err != nil {
-		return "", nil, fmt.Errorf("resolve pty binary %q: %w", s.cfg.Binary, err)
+		return "", fmt.Errorf("resolve agent %q: %w", agent, err)
 	}
-	return binary, append([]string(nil), s.cfg.Args...), nil
-}
-
-// binaryLabel names the configured program for logs, distinguishing the
-// login-shell default from an explicit binary.
-func (s *Service) binaryLabel() string {
-	if strings.TrimSpace(s.cfg.Binary) == "" {
-		return "(login shell)"
-	}
-	return s.cfg.Binary
+	return binary, nil
 }
 
 func (s *Service) runAttached(
@@ -294,7 +284,6 @@ func (s *Service) runAttached(
 	userID string,
 	sessionID string,
 	host Host,
-	predictive bool,
 ) error {
 	stdoutCh := make(chan stdoutEvent, 8)
 	clientCh := make(chan clientEvent, 8)
@@ -305,20 +294,12 @@ func (s *Service) runAttached(
 	go waitHost(host, exitCh)
 
 	runtime := newAttachRuntime(stream, host)
-	var tickCh <-chan time.Time
-	if predictive {
-		runtime.echo = &echoTracker{}
-		ticker := time.NewTicker(echoTickInterval)
-		defer ticker.Stop()
-		tickCh = ticker.C
-	}
 
 	for !runtime.readyToExit() {
 		nextStdout, nextClient, err := s.processAttachEvent(runtime, userID, sessionID, attachChans{
 			stdout: stdoutCh,
 			client: clientCh,
 			exit:   exitCh,
-			tick:   tickCh,
 		})
 		if err != nil {
 			return normalizeApplicationStop(err)
@@ -333,7 +314,6 @@ type attachChans struct {
 	stdout chan stdoutEvent
 	client chan clientEvent
 	exit   chan exitEvent
-	tick   <-chan time.Time
 }
 
 func (s *Service) processAttachEvent(
@@ -352,9 +332,6 @@ func (s *Service) processAttachEvent(
 	case result := <-chans.exit:
 		s.logPTYExited(userID, sessionID, result)
 		return chans.stdout, chans.client, runtime.handleExitEvent(result)
-	case now := <-chans.tick:
-		nextStdout, err := runtime.handleEchoTick(chans.stdout, now)
-		return nextStdout, chans.client, err
 	}
 }
 
@@ -420,7 +397,6 @@ func (s *Service) handleClientStdin(
 	if _, err := runtime.host.Stdin().Write(payload); err != nil {
 		return false, remotefsv1.Error_KIND_INTERNAL, err
 	}
-	runtime.echo.record(len(payload), time.Now())
 	return false, 0, nil
 }
 
@@ -438,6 +414,7 @@ func (s *Service) logAttachRequested(userID string, attach *remotefsv1.AttachReq
 	size := attach.GetInitialSize()
 	s.cfg.Logger.Info("pty attach requested",
 		"user_id", userID,
+		"agent", attach.GetAgent(),
 		"term", attach.GetTerm(),
 		"cols", size.GetCols(),
 		"rows", size.GetRows(),
@@ -544,13 +521,14 @@ func waitHost(host Host, ch chan<- exitEvent) {
 	ch <- exitEvent{info: info, err: err}
 }
 
-func sendAttachedFrame(stream grpcBidiStream, sessionID string, cwd string, echoAck bool) error {
+// sendAttachedFrame deliberately leaves Attached.cwd unset: the server-side
+// workspace path is not disclosed to the client, which only ever sees the
+// pinned agent's UI. The proto field is kept for wire compatibility.
+func sendAttachedFrame(stream grpcBidiStream, sessionID string) error {
 	return stream.Send(&remotefsv1.ServerFrame{
 		Payload: &remotefsv1.ServerFrame_Attached{
 			Attached: &remotefsv1.Attached{
 				SessionId: sessionID,
-				Cwd:       cwd,
-				EchoAck:   echoAck,
 			},
 		},
 	})
@@ -625,7 +603,6 @@ type attachRuntime struct {
 	hostExited   bool
 	exitInfo     ptyhost.ExitInfo
 	shutdownOnce sync.Once
-	echo         *echoTracker
 }
 
 func newAttachRuntime(stream grpcBidiStream, host Host) *attachRuntime {
@@ -678,46 +655,6 @@ func (r *attachRuntime) handleStdoutError(stdoutCh chan stdoutEvent, err error) 
 	r.shutdown(true)
 	waitHostSilently(r.host)
 	return stdoutCh, r.sendApplicationError(remotefsv1.Error_KIND_INTERNAL, err.Error())
-}
-
-// handleEchoTick advances the echo-ack watermark. Pending stdout is drained
-// first so an ack never overtakes the echo bytes it vouches for.
-func (r *attachRuntime) handleEchoTick(stdoutCh chan stdoutEvent, now time.Time) (chan stdoutEvent, error) {
-	nextStdout, err := r.drainStdout(stdoutCh)
-	if err != nil {
-		return nextStdout, err
-	}
-	r.sendEchoAck(now)
-	return nextStdout, nil
-}
-
-func (r *attachRuntime) drainStdout(stdoutCh chan stdoutEvent) (chan stdoutEvent, error) {
-	for stdoutCh != nil {
-		select {
-		case result, ok := <-stdoutCh:
-			next, err := r.handleStdoutEvent(stdoutCh, result, ok)
-			if err != nil {
-				return next, err
-			}
-			stdoutCh = next
-		default:
-			return stdoutCh, nil
-		}
-	}
-	return stdoutCh, nil
-}
-
-func (r *attachRuntime) sendEchoAck(now time.Time) {
-	if !r.streamOpen {
-		return
-	}
-	offset, ok := r.echo.watermark(now)
-	if !ok {
-		return
-	}
-	if err := r.stream.Send(echoAckFrame(offset)); err != nil {
-		r.closeStream()
-	}
 }
 
 func (r *attachRuntime) handleExitEvent(result exitEvent) error {

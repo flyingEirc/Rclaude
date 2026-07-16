@@ -47,17 +47,22 @@ func TestMount_LinuxSmoke(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"user-a", "user-b"}, dirEntryNames(rootEntries))
 
-	got, err := readMountedFile(mountpoint, userA.UserID, "existing.txt")
+	userEntries, err := os.ReadDir(filepath.Join(mountpoint, userA.UserID))
+	require.NoError(t, err)
+	assert.Equal(t, []string{userA.WorkspaceName}, dirEntryNames(userEntries),
+		"user dir must list exactly the bootstrap workspace name")
+
+	got, err := readMountedFile(mountpoint, userA.UserID, userA.WorkspaceName, "existing.txt")
 	require.NoError(t, err)
 	assert.Equal(t, "hello", string(got))
 
-	createdPath := filepath.Join(mountpoint, userA.UserID, "created.txt")
+	createdPath := filepath.Join(mountpoint, userA.UserID, userA.WorkspaceName, "created.txt")
 	require.NoError(t, os.WriteFile(createdPath, []byte("world"), 0o600))
 	got, err = os.ReadFile(userA.AbsPath("created.txt"))
 	require.NoError(t, err)
 	assert.Equal(t, "world", string(got))
 
-	renamedPath := filepath.Join(mountpoint, userA.UserID, "renamed.txt")
+	renamedPath := filepath.Join(mountpoint, userA.UserID, userA.WorkspaceName, "renamed.txt")
 	require.NoError(t, os.Rename(createdPath, renamedPath))
 	_, err = os.Stat(userA.AbsPath("created.txt"))
 	assert.ErrorIs(t, err, os.ErrNotExist)
@@ -100,7 +105,7 @@ func TestMount_LinuxSmoke_CwdAndGoList(t *testing.T) {
 		assert.NoError(t, mounted.Close())
 	}()
 
-	workspace := filepath.Join(mountpoint, user.UserID)
+	workspace := filepath.Join(mountpoint, user.UserID, user.WorkspaceName)
 	cmdCtx, cmdCancel := context.WithTimeout(context.Background(), defaultFuseCommandTimeout)
 	defer cmdCancel()
 
@@ -201,7 +206,7 @@ func containsAny(text string, patterns ...string) bool {
 	return false
 }
 
-func readMountedFile(mountpoint, userID, relPath string) ([]byte, error) {
+func readMountedFile(mountpoint, userID, workspace, relPath string) ([]byte, error) {
 	//nolint:gosec // test paths are built from t.TempDir and fixed test user ids
-	return os.ReadFile(filepath.Join(mountpoint, userID, relPath))
+	return os.ReadFile(filepath.Join(mountpoint, userID, workspace, relPath))
 }

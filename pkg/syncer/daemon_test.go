@@ -33,10 +33,11 @@ func TestRun_InvalidConfig(t *testing.T) {
 }
 
 func TestRun_InvalidSensitivePatterns(t *testing.T) {
-	cfg := testDaemonConfig(t.TempDir(), "passthrough:///phase6b", "token")
+	root := t.TempDir()
+	cfg := testDaemonConfig(root, "passthrough:///phase6b", "token")
 	cfg.Workspace.SensitivePatterns = []string{"["}
 
-	err := Run(context.Background(), RunOptions{Config: cfg})
+	err := Run(context.Background(), RunOptions{Config: cfg, WorkspaceRoot: root})
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidSensitivePattern)
 }
@@ -67,9 +68,10 @@ func TestRun_InitialTreeRequestsWatchAndHeartbeat(t *testing.T) {
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- Run(ctx, RunOptions{
-			Config: testDaemonConfig(root, "passthrough:///phase2", "token"),
-			Logger: logger,
-			Dialer: dialer,
+			Config:        testDaemonConfig(root, "passthrough:///phase2", "token"),
+			WorkspaceRoot: root,
+			Logger:        logger,
+			Dialer:        dialer,
 		})
 	}()
 
@@ -80,6 +82,8 @@ func TestRun_InitialTreeRequestsWatchAndHeartbeat(t *testing.T) {
 	})
 	treePaths := collectTreePaths(treeMsg.GetFileTree().GetFiles())
 	assert.ElementsMatch(t, []string{"README.md", "nested", "nested/app.txt"}, treePaths)
+	assert.Equal(t, filepath.Base(root), treeMsg.GetFileTree().GetWorkspaceName(),
+		"bootstrap file tree must carry the project directory name")
 
 	require.NoError(t, server.SendRequest(&remotefsv1.ServerMessage{
 		Msg: &remotefsv1.ServerMessage_Request{
@@ -184,9 +188,10 @@ func TestRun_SensitivePathsAreFiltered(t *testing.T) {
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- Run(ctx, RunOptions{
-			Config: cfg,
-			Logger: logx.Nop(),
-			Dialer: dialer,
+			Config:        cfg,
+			WorkspaceRoot: root,
+			Logger:        logx.Nop(),
+			Dialer:        dialer,
 		})
 	}()
 
@@ -276,9 +281,10 @@ func TestRun_ReadRateLimitDelaysResponse(t *testing.T) {
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- Run(ctx, RunOptions{
-			Config: cfg,
-			Logger: logx.Nop(),
-			Dialer: dialer,
+			Config:        cfg,
+			WorkspaceRoot: root,
+			Logger:        logx.Nop(),
+			Dialer:        dialer,
 		})
 	}()
 
@@ -334,9 +340,10 @@ func TestRun_WriteRateLimitDelaysResponse(t *testing.T) {
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- Run(ctx, RunOptions{
-			Config: cfg,
-			Logger: logx.Nop(),
-			Dialer: dialer,
+			Config:        cfg,
+			WorkspaceRoot: root,
+			Logger:        logx.Nop(),
+			Dialer:        dialer,
 		})
 	}()
 
@@ -399,9 +406,10 @@ func TestRun_CancelWhileRateLimitedReadUnblocks(t *testing.T) {
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- Run(ctx, RunOptions{
-			Config: cfg,
-			Logger: logx.Nop(),
-			Dialer: dialer,
+			Config:        cfg,
+			WorkspaceRoot: root,
+			Logger:        logx.Nop(),
+			Dialer:        dialer,
 		})
 	}()
 
@@ -457,9 +465,10 @@ func TestRun_RetriesUntilStreamOpens(t *testing.T) {
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- Run(ctx, RunOptions{
-			Config: testDaemonConfig(root, "passthrough:///retry", "token"),
-			Logger: logx.Nop(),
-			Dialer: dialer,
+			Config:        testDaemonConfig(root, "passthrough:///retry", "token"),
+			WorkspaceRoot: root,
+			Logger:        logx.Nop(),
+			Dialer:        dialer,
 		})
 	}()
 
@@ -479,13 +488,11 @@ func TestRun_RetriesUntilStreamOpens(t *testing.T) {
 }
 
 func testDaemonConfig(root, address, token string) *config.DaemonConfig {
+	_ = root
 	return &config.DaemonConfig{
 		Server: config.ServerEndpoint{
 			Address: address,
 			Token:   token,
-		},
-		Workspace: config.Workspace{
-			Path: root,
 		},
 		PTY: config.DaemonPTYConfig{
 			FrameMaxBytes: config.DefaultPTYFrameMaxBytes,

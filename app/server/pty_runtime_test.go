@@ -23,14 +23,17 @@ func TestNewPTYServiceBuildsFromServerConfig(t *testing.T) {
 	manager := session.NewManager()
 	current := manager.NewSession("alice")
 	require.NoError(t, current.Bootstrap(&remotefsv1.DaemonMessage{
-		Msg: &remotefsv1.DaemonMessage_FileTree{FileTree: &remotefsv1.FileTree{}},
+		Msg: &remotefsv1.DaemonMessage_FileTree{FileTree: &remotefsv1.FileTree{WorkspaceName: "proj"}},
 	}))
 	_, err := manager.Register(current)
 	require.NoError(t, err)
 
+	workspace, ok := ptyRegistry{manager: manager}.LookupDaemon("alice")
+	require.True(t, ok)
+	assert.Equal(t, "proj", workspace, "registry must expose the daemon workspace name")
+
 	svc, err := newPTYService(&config.ServerConfig{
 		PTY: config.PTYConfig{
-			Binary:                  testBinaryPath(t),
 			WorkspaceRoot:           testWorkspaceRoot(),
 			EnvPassthrough:          []string{"TERM", "PATH"},
 			FrameMaxBytes:           64 * 1024,
@@ -91,13 +94,6 @@ func TestAttachLimiterStoreIsPerUser(t *testing.T) {
 	require.NoError(t, store.Wait(ctx, "bob"))
 
 	assert.Less(t, time.Since(start), 100*time.Millisecond)
-}
-
-func testBinaryPath(t *testing.T) string {
-	t.Helper()
-	path, err := os.Executable()
-	require.NoError(t, err)
-	return path
 }
 
 func testWorkspaceRoot() string {

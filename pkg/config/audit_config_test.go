@@ -13,8 +13,6 @@ func daemonYAMLWithAudit(auditBody string) string {
 	return `
 server:
   address: "example.com:9000"
-workspace:
-  path: ` + escapeYAML(absWorkspace()) + `
 audit:
 ` + auditBody
 }
@@ -24,8 +22,6 @@ func TestLoadDaemonAuditDefaults(t *testing.T) {
 	body := `
 server:
   address: "example.com:9000"
-workspace:
-  path: ` + escapeYAML(absWorkspace()) + `
 `
 	path := writeYAML(t, "daemon.yaml", body)
 	cfg, err := config.LoadDaemon(path)

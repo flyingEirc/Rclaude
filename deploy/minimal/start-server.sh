@@ -8,11 +8,14 @@ set -eu
 #   3. (re)starts rclaude-server there, detached, and confirms it is up.
 #
 # All connection facts come from the skill and are treated as fixed. Override
-# them with the RCLAUDE_* env vars below if they ever change. The private key
-# and token live in .list/ (gitignored) and are never printed by this script.
+# them with the RCLAUDE_* env vars below if they ever change. Default access is
+# Tailscale SSH (`ssh root@dmit`, tailnet-authenticated, no key material); set
+# RCLAUDE_SSH_HOST=root@69.63.208.133 RCLAUDE_SSH_KEY=.list/server_private_key
+# to fall back to raw-IP key-based SSH. The key and token live in .list/
+# (gitignored) and are never printed by this script.
 
-SSH_HOST="${RCLAUDE_SSH_HOST:-root@69.63.208.133}"
-SSH_KEY="${RCLAUDE_SSH_KEY:-.list/server_private_key}"
+SSH_HOST="${RCLAUDE_SSH_HOST:-root@dmit}"
+SSH_KEY="${RCLAUDE_SSH_KEY:-}"
 REMOTE_DIR="${RCLAUDE_REMOTE_DIR:-/etc/rclaude}"
 REMOTE_MOUNT="${RCLAUDE_REMOTE_MOUNT:-/workspace}"
 
@@ -32,14 +35,18 @@ if [ ! -f "$config_path" ]; then
   echo "generate deploy/minimal/server.test.yaml first (see deploy/minimal/README.md)" >&2
   exit 1
 fi
-if [ ! -f "$SSH_KEY" ]; then
-  echo "ssh key not found: $SSH_KEY" >&2
-  exit 1
+SSH_OPTS="-o StrictHostKeyChecking=accept-new"
+if [ -n "$SSH_KEY" ]; then
+  if [ ! -f "$SSH_KEY" ]; then
+    echo "ssh key not found: $SSH_KEY" >&2
+    exit 1
+  fi
+  chmod 600 "$SSH_KEY" 2>/dev/null || true
+  SSH_OPTS="-i $SSH_KEY -o IdentitiesOnly=yes $SSH_OPTS"
 fi
-chmod 600 "$SSH_KEY" 2>/dev/null || true
 
-SSH="ssh -i $SSH_KEY -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
-SCP="scp -i $SSH_KEY -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+SSH="ssh $SSH_OPTS"
+SCP="scp $SSH_OPTS"
 
 # Retry short-lived ssh/scp ops: the link to the test host occasionally drops a
 # transfer mid-way. scp has no resume, so re-run the whole op up to 3 times.
@@ -104,6 +111,10 @@ if mount | grep -q "on $REMOTE_MOUNT "; then
 fi
 mkdir -p '$REMOTE_MOUNT'
 mv -f rclaude-server.new rclaude-server
+# Bare -g agent names resolve via this server process's PATH. Non-interactive
+# ssh shells do not include ~/.local/bin, which is where claude/codex live on
+# the test box, so prepend it before launching.
+export PATH="\$HOME/.local/bin:\$PATH"
 setsid nohup ./rclaude-server --config '$REMOTE_DIR/$config_name' >'$REMOTE_DIR/server.out' 2>&1 </dev/null &
 sleep 2
 if pgrep -x rclaude-server >/dev/null 2>&1; then
@@ -117,4 +128,4 @@ REMOTE
 
 echo "==> server started on $SSH_HOST"
 echo "    tail remote log: $SSH $SSH_HOST 'tail -f $REMOTE_DIR/server.out'"
-echo "    then run locally: sh ./deploy/minimal/start-rclaude.sh ./deploy/minimal/daemon.test.yaml"
+echo "    then run locally: sh ./deploy/minimal/start-rclaude.sh <agent> ./deploy/minimal/daemon.test.yaml"

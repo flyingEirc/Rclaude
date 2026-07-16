@@ -29,7 +29,7 @@ func TestWorkspaceNode_Open_AcceptsWriteFlags(t *testing.T) {
 	})
 	defer cleanup()
 
-	node := &workspaceNode{manager: manager, userID: "u1", relPath: "a.txt"}
+	node := &workspaceNode{manager: manager, userID: "u1", workspace: "proj", relPath: "a.txt"}
 	for _, flags := range []uint32{syscall.O_RDONLY, syscall.O_WRONLY, syscall.O_RDWR} {
 		_, _, errno := node.Open(context.Background(), flags)
 		assert.Equal(t, syscall.Errno(0), errno)
@@ -81,7 +81,7 @@ func TestWorkspaceNode_Write_ForwardsOffset(t *testing.T) {
 	})
 	defer cleanup()
 
-	node := &workspaceNode{manager: manager, userID: "u1", relPath: "a.txt"}
+	node := &workspaceNode{manager: manager, userID: "u1", workspace: "proj", relPath: "a.txt"}
 	written, errno := node.Write(context.Background(), nil, []byte("xx"), 3)
 	assert.Equal(t, uint32(2), written)
 	assert.Equal(t, syscall.Errno(0), errno)
@@ -116,7 +116,7 @@ func TestWorkspaceNode_MkdirUnlinkRmdir(t *testing.T) {
 	out := &fuse.EntryOut{}
 	_, errno := root.Mkdir(context.Background(), "newdir", 0o755, out)
 	assert.Equal(t, syscall.Errno(0), errno)
-	assert.Equal(t, syscall.Errno(0), (&workspaceNode{manager: manager, userID: "u1", relPath: "d"}).Unlink(context.Background(), "x.txt"))
+	assert.Equal(t, syscall.Errno(0), (&workspaceNode{manager: manager, userID: "u1", workspace: "proj", relPath: "d"}).Unlink(context.Background(), "x.txt"))
 	assert.Equal(t, syscall.Errno(0), root.Rmdir(context.Background(), "d"))
 }
 
@@ -138,8 +138,8 @@ func TestWorkspaceNode_Rename_FullPath(t *testing.T) {
 	})
 	defer cleanup()
 
-	src := &workspaceNode{manager: manager, userID: "u1", relPath: "a"}
-	dst := &workspaceNode{manager: manager, userID: "u1", relPath: "b"}
+	src := &workspaceNode{manager: manager, userID: "u1", workspace: "proj", relPath: "a"}
+	dst := &workspaceNode{manager: manager, userID: "u1", workspace: "proj", relPath: "b"}
 	errno := src.Rename(context.Background(), "x", dst, "x", 0)
 	assert.Equal(t, syscall.Errno(0), errno)
 }
@@ -167,7 +167,7 @@ func TestWorkspaceNode_Setattr_OnlySize(t *testing.T) {
 	})
 	defer cleanup()
 
-	node := &workspaceNode{manager: manager, userID: "u1", relPath: "a.txt"}
+	node := &workspaceNode{manager: manager, userID: "u1", workspace: "proj", relPath: "a.txt"}
 	in := &fuse.SetAttrIn{}
 	in.Size = 7
 	in.Valid = fuse.FATTR_SIZE
@@ -186,6 +186,37 @@ func TestErrnoFromError(t *testing.T) {
 	assert.Equal(t, syscall.EXDEV, errnoFromError(ErrCrossDevice))
 	assert.Equal(t, syscall.EINVAL, errnoFromError(ErrInvalidArgument))
 	assert.Equal(t, syscall.ETIMEDOUT, errnoFromError(ErrRequestTimeout))
+}
+
+func TestUserNode_ListsOnlyBootstrapWorkspace(t *testing.T) {
+	t.Parallel()
+
+	manager, cleanup := startFakeSession(t, []*remotefsv1.FileInfo{
+		{Path: "a.txt", Size: 1, Mode: 0o644},
+	}, func(req *remotefsv1.FileRequest) *remotefsv1.FileResponse {
+		t.Fatalf("unexpected request: %T", req.GetOperation())
+		return nil
+	})
+	defer cleanup()
+
+	node := &userNode{manager: manager, userID: "u1", inodes: newInodeAllocator()}
+	fs.NewNodeFS(node, &fs.Options{})
+
+	stream, errno := node.Readdir(context.Background())
+	require.Equal(t, syscall.Errno(0), errno)
+	require.True(t, stream.HasNext())
+	entry, errno := stream.Next()
+	require.Equal(t, syscall.Errno(0), errno)
+	assert.Equal(t, "proj", entry.Name, "user dir must list the bootstrap workspace name")
+	assert.False(t, stream.HasNext(), "user dir must contain exactly one workspace entry")
+
+	out := &fuse.EntryOut{}
+	inode, errno := node.Lookup(context.Background(), "proj", out)
+	assert.Equal(t, syscall.Errno(0), errno)
+	require.NotNil(t, inode)
+
+	_, errno = node.Lookup(context.Background(), "other", out)
+	assert.Equal(t, syscall.ENOENT, errno, "non-bootstrap names must not resolve")
 }
 
 func startFakeSession(
@@ -217,7 +248,7 @@ func bootstrapFakeSession(t *testing.T, manager *session.Manager, files []*remot
 	current := session.NewSession("u1")
 	require.NoError(t, current.Bootstrap(&remotefsv1.DaemonMessage{
 		Msg: &remotefsv1.DaemonMessage_FileTree{
-			FileTree: &remotefsv1.FileTree{Files: files},
+			FileTree: &remotefsv1.FileTree{WorkspaceName: "proj", Files: files},
 		},
 	}))
 
@@ -293,7 +324,7 @@ func pushFakeResponse(
 }
 
 func newAttachedWorkspaceNode(manager *session.Manager, userID, relPath string) *workspaceNode {
-	node := &workspaceNode{manager: manager, userID: userID, relPath: relPath}
+	node := &workspaceNode{manager: manager, userID: userID, workspace: "proj", relPath: relPath}
 	fs.NewNodeFS(node, &fs.Options{})
 	return node
 }
