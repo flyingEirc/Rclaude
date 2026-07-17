@@ -134,9 +134,6 @@ func handleWrite(ctx context.Context, reqID string, r *remotefsv1.WriteFileReq, 
 
 	unlock := deps.locker.Lock(r.GetPath())
 	defer unlock()
-	if err := opts.WriteLimiter.WaitBytes(ctx, len(r.GetContent())); err != nil {
-		return errResponse(reqID, formatErr("write", r.GetPath(), err))
-	}
 	deps.selfWrites.Remember(r.GetPath())
 
 	file, err := openWriteTarget(abs, defaultWriteMode(r.GetMode()), r.GetAppend())

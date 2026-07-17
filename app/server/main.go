@@ -118,7 +118,7 @@ func prepareRuntime(
 	if err != nil {
 		return nil, nil, nil, nil, nil, err
 	}
-	logger, err := newLogger(cfg)
+	logger, err := newLogger()
 	if err != nil {
 		return nil, nil, nil, nil, nil, err
 	}
@@ -248,15 +248,12 @@ func stopGRPCServer(logger logx.Logger, grpcServer *grpc.Server) {
 }
 
 // newLogger 构建写入本地日志文件的 logger；终端不输出任何日志。
-func newLogger(cfg *config.ServerConfig) (*logx.FileLogger, error) {
+// 日志策略写死：全等级（debug）落地、JSON 格式，目录与轮转用 logx 默认。
+func newLogger() (*logx.FileLogger, error) {
 	return logx.New(logx.Options{
-		Level:      cfg.Log.Level,
-		Format:     logx.Format(cfg.Log.Format),
-		Dir:        cfg.Log.Dir,
-		Filename:   "rclaude-server.log",
-		MaxSizeMB:  cfg.Log.MaxSizeMB,
-		MaxBackups: cfg.Log.MaxBackups,
-		MaxAgeDays: cfg.Log.MaxAgeDays,
+		Level:    "debug",
+		Format:   logx.FormatJSON,
+		Filename: "rclaude-server.log",
 	})
 }
 

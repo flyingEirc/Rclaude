@@ -259,7 +259,7 @@ func loadClientConfigFromDaemon(path string) (loadedConfig, error) {
 	return loadedConfig{
 		Address:  strings.TrimSpace(cfg.Server.Address),
 		Token:    token,
-		FrameMax: clientFrameMax(cfg.PTY.FrameMaxBytes),
+		FrameMax: int(config.DefaultPTYFrameMaxBytes),
 		TLS:      dialTLS(cfg.Server.TLS),
 	}, nil
 }

@@ -91,7 +91,7 @@ sh ./deploy/minimal/start-rclaude.sh claude ./deploy/minimal/daemon.test.yaml
   被占用、`/workspace` 残留挂载，或 mountpoint 缺失。
 - 本地 `daemon start failed` / `pty start failed`：server 不可达、token 映射到了错误的
   `user_id`，或 `-g` 声明的 agent 在 server 侧解析不到（PATH 或绝对路径）。
-- PTY attach 上了但 agent 行为异常：检查 **server** 侧该 agent 的安装、登录态、`PATH`，
-  以及 `HOME`/`SHELL`/`CLAUDE_CONFIG_DIR` 是否在 `pty.env_passthrough` 里。若只想验证
-  传输链路，可临时用 `-g /bin/sh` attach。
+- PTY attach 上了但 agent 行为异常：检查 **server** 侧该 agent 的安装、登录态、`PATH`。
+  `HOME`/`SHELL`/`CLAUDE_CONFIG_DIR` 会被自动透传——它们属于固定的内置环境变量透传
+  白名单（不再是配置项）。若只想验证传输链路，可临时用 `-g /bin/sh` attach。
 - 从同步/挂载的工作区运行时丢了可执行位：按上面那样用 `sh` 来调用脚本。

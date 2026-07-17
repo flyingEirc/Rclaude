@@ -21,15 +21,17 @@ func newPTYService(cfg *config.ServerConfig, manager *session.Manager, logger lo
 		return nil, session.ErrNilManager
 	}
 
+	// PTY 运行环境全部写死，不再来自配置：工作区根即 FUSE 挂载点（二者同源），
+	// env 白名单、帧上限、优雅退出、限速都取 config 中的默认常量。
 	return ptyservice.New(ptyservice.Config{
 		Registry:     ptyRegistry{manager: manager},
 		Spawner:      ptySpawner{},
-		AttachLimit:  newAttachLimiterStore(cfg.PTY.RateLimit.AttachQPS, cfg.PTY.RateLimit.AttachBurst),
-		InputLimit:   newInputLimiterStore(cfg.PTY.RateLimit.StdinBPS, cfg.PTY.RateLimit.StdinBurst),
-		Workspace:    cfg.PTY.WorkspaceRoot,
-		EnvWhitelist: append([]string(nil), cfg.PTY.EnvPassthrough...),
-		FrameMax:     cfg.PTY.FrameMaxBytes,
-		GracefulStop: cfg.PTY.GracefulShutdownTimeout,
+		AttachLimit:  newAttachLimiterStore(config.DefaultPTYAttachQPS, config.DefaultPTYAttachBurst),
+		InputLimit:   newInputLimiterStore(config.DefaultPTYStdinBPS, config.DefaultPTYStdinBurst),
+		Workspace:    cfg.FUSE.Mountpoint,
+		EnvWhitelist: append([]string(nil), config.DefaultPTYEnvPassthrough...),
+		FrameMax:     config.DefaultPTYFrameMaxBytes,
+		GracefulStop: config.DefaultPTYGracefulShutdown,
 		Logger:       logger,
 	})
 }

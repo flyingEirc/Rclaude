@@ -5,4 +5,5 @@ docs
 .test/bin/
 .test/run/
 *.test.yaml
+*.dev.yaml
 /bin/
