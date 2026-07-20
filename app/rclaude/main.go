@@ -98,14 +98,11 @@ func runUnified(ctx context.Context, configPath string, agent string) error {
 	if err != nil {
 		return fmt.Errorf("%w\nrun rclaude from your project root directory", err)
 	}
+	// 日志策略写死：全等级（debug）落地、JSON 格式，目录与轮转用 logx 默认。
 	logger, err := logx.New(logx.Options{
-		Level:      cfg.Log.Level,
-		Format:     logx.Format(cfg.Log.Format),
-		Dir:        cfg.Log.Dir,
-		Filename:   logFilename,
-		MaxSizeMB:  cfg.Log.MaxSizeMB,
-		MaxBackups: cfg.Log.MaxBackups,
-		MaxAgeDays: cfg.Log.MaxAgeDays,
+		Level:    "debug",
+		Format:   logx.FormatJSON,
+		Filename: logFilename,
 	})
 	if err != nil {
 		return err
@@ -187,8 +184,8 @@ func runCoordinated(
 	coord, err := startup.New(startup.Options{
 		Bus:        EventBus.New(),
 		Logger:     logger,
-		MaxRetries: cfg.Startup.MaxRetries,
-		RetryDelay: cfg.Startup.RetryDelay,
+		MaxRetries: config.DefaultStartupMaxRetries,
+		RetryDelay: config.DefaultStartupRetryDelay,
 	}, daemonSpec(cfg, workspaceRoot, logger), ptySpec(configPath, agent))
 	if err != nil {
 		return err

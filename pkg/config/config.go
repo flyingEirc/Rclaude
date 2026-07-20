@@ -3,7 +3,6 @@ package config
 import (
 	"errors"
 	"fmt"
-	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -30,7 +29,7 @@ const (
 	DefaultAuditTable                   = "file_audit_log"
 	DefaultAuditQueueSize               = 256
 	DefaultStartupMaxRetries            = 3
-	DefaultStartupRetryDelay            = time.Second
+	DefaultStartupRetryDelay            = 5 * time.Second
 	// gRPC keepalive：客户端与服务端周期性发 HTTP/2 PING，一是保活路径上的
 	// NAT/防火墙映射（PTY 可长时间空闲，实测 40~60 分钟会被中间设备掐断），
 	// 二是让两端在 Time+Timeout 内探测到死连接并走既有清理路径。
@@ -46,21 +45,14 @@ const (
 )
 
 var (
-	DefaultPTYEnvPassthrough    = []string{"TERM", "LANG", "LC_ALL", "LC_CTYPE", "PATH", "HOME", "SHELL", "CLAUDE_CONFIG_DIR"}
-	ErrEmptyServerAddress       = errors.New("config: server.address is required")
-	ErrEmptyListen              = errors.New("config: listen is required")
-	ErrEmptyTokens              = errors.New("config: auth.tokens must contain at least one entry")
-	ErrMountpointNotAbs         = errors.New("config: fuse.mountpoint must be absolute")
-	ErrNegativeReadRate         = errors.New("config: rate_limit.read_bytes_per_sec must be >= 0")
-	ErrNegativeWriteRate        = errors.New("config: rate_limit.write_bytes_per_sec must be >= 0")
-	ErrPTYWorkspaceRootNotAbs   = errors.New("config: pty.workspace_root must be absolute")
-	ErrPTYFrameMaxBytesNegative = errors.New("config: pty.frame_max_bytes must be > 0")
-	ErrPTYRateLimitNegative     = errors.New("config: pty.ratelimit values must be >= 0")
-	ErrAuditDriverInvalid       = errors.New("config: audit.driver must be one of sqlite/mysql/postgres")
-	ErrAuditDSNRequired         = errors.New("config: audit.dsn is required when audit.enabled is true")
-	ErrAuditTableInvalid        = errors.New("config: audit.table may only contain letters, digits and underscores")
-	ErrStartupRetriesNegative   = errors.New("config: startup.max_retries must be >= 0")
-	ErrStartupDelayNegative     = errors.New("config: startup.retry_delay must be >= 0")
+	DefaultPTYEnvPassthrough = []string{"TERM", "LANG", "LC_ALL", "LC_CTYPE", "PATH", "HOME", "SHELL", "CLAUDE_CONFIG_DIR"}
+	ErrEmptyServerAddress    = errors.New("config: server.address is required")
+	ErrEmptyListen           = errors.New("config: listen is required")
+	ErrEmptyTokens           = errors.New("config: auth.tokens must contain at least one entry")
+	ErrMountpointNotAbs      = errors.New("config: fuse.mountpoint must be absolute")
+	ErrAuditDriverInvalid    = errors.New("config: audit.driver must be one of sqlite/mysql/postgres")
+	ErrAuditDSNRequired      = errors.New("config: audit.dsn is required when audit.enabled is true")
+	ErrAuditTableInvalid     = errors.New("config: audit.table may only contain letters, digits and underscores")
 
 	auditTablePattern = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
 )
@@ -103,40 +95,14 @@ type Workspace struct {
 	SensitivePatterns []string `mapstructure:"sensitive_patterns"`
 }
 
-// LogConfig 控制日志级别、格式与落盘位置。
-// 日志始终写入本地文件（默认 JSON），不输出到终端；
-// Dir 为空时使用 logx.DefaultDir()（~/.rclaude/logs）。
-type LogConfig struct {
-	Level      string `mapstructure:"level"`
-	Format     string `mapstructure:"format"`
-	Dir        string `mapstructure:"dir"`
-	MaxSizeMB  int    `mapstructure:"max_size_mb"`
-	MaxBackups int    `mapstructure:"max_backups"`
-	MaxAgeDays int    `mapstructure:"max_age_days"`
-}
-
-type RateLimitConfig struct {
-	ReadBytesPerSec  int64 `mapstructure:"read_bytes_per_sec"`
-	WriteBytesPerSec int64 `mapstructure:"write_bytes_per_sec"`
-}
-
+// DaemonConfig 只保留必须由用户提供的项：远端 Server 端点、工作区同步选项、
+// 审计。日志（全等级 + JSON）、启动重试（3 次 / 5s）等均写死在入口代码里，
+// 不再来自配置。
 type DaemonConfig struct {
-	Server       ServerEndpoint  `mapstructure:"server"`
-	Workspace    Workspace       `mapstructure:"workspace"`
-	PTY          DaemonPTYConfig `mapstructure:"pty"`
-	Log          LogConfig       `mapstructure:"log"`
-	RateLimit    RateLimitConfig `mapstructure:"rate_limit"`
-	Audit        AuditConfig     `mapstructure:"audit"`
-	Startup      StartupConfig   `mapstructure:"startup"`
-	SelfWriteTTL time.Duration   `mapstructure:"self_write_ttl"`
-}
-
-// StartupConfig 控制统一入口（rclaude）启动阶段的事件总线重试策略。
-// MaxRetries 指初始尝试之外允许的重试次数（总尝试数 = 1 + MaxRetries）；
-// RetryDelay 是收到重试通知后再次尝试前的等待时间。
-type StartupConfig struct {
-	MaxRetries int           `mapstructure:"max_retries"`
-	RetryDelay time.Duration `mapstructure:"retry_delay"`
+	Server       ServerEndpoint `mapstructure:"server"`
+	Workspace    Workspace      `mapstructure:"workspace"`
+	Audit        AuditConfig    `mapstructure:"audit"`
+	SelfWriteTTL time.Duration  `mapstructure:"self_write_ttl"`
 }
 
 // AuditConfig controls persistence of remote file-operation records into a
@@ -147,10 +113,6 @@ type AuditConfig struct {
 	DSN       string `mapstructure:"dsn"`
 	Table     string `mapstructure:"table"`
 	QueueSize int    `mapstructure:"queue_size"`
-}
-
-type DaemonPTYConfig struct {
-	FrameMaxBytes int64 `mapstructure:"frame_max_bytes"`
 }
 
 type AuthConfig struct {
@@ -171,31 +133,15 @@ type PrefetchConfig struct {
 	MaxFilesPerDir int   `mapstructure:"max_files_per_dir"`
 }
 
-type PTYRateLimitConfig struct {
-	AttachQPS   int   `mapstructure:"attach_qps"`
-	AttachBurst int   `mapstructure:"attach_burst"`
-	StdinBPS    int64 `mapstructure:"stdin_bps"`
-	StdinBurst  int64 `mapstructure:"stdin_burst"`
-}
-
-// PTYConfig 只约束 PTY 会话的运行环境。要运行哪个 agent 程序不在服务端配置：
-// 由用户启动 rclaude 时以 -g/--agent 声明，随 AttachReq.agent 下发。
-type PTYConfig struct {
-	WorkspaceRoot           string             `mapstructure:"workspace_root"`
-	EnvPassthrough          []string           `mapstructure:"env_passthrough"`
-	FrameMaxBytes           int64              `mapstructure:"frame_max_bytes"`
-	GracefulShutdownTimeout time.Duration      `mapstructure:"graceful_shutdown_timeout"`
-	RateLimit               PTYRateLimitConfig `mapstructure:"ratelimit"`
-}
-
+// ServerConfig 只保留监听地址、鉴权、FUSE 挂载点与缓存/预取等必须配置项。
+// PTY 会话运行环境（工作区根、env 白名单、帧大小、优雅退出、限速）与日志
+// （全等级 + JSON）均写死在入口代码里：PTY 工作区根取 FUSE.Mountpoint。
 type ServerConfig struct {
 	Listen             string         `mapstructure:"listen"`
 	Auth               AuthConfig     `mapstructure:"auth"`
 	FUSE               FUSEConfig     `mapstructure:"fuse"`
 	Cache              CacheConfig    `mapstructure:"cache"`
 	Prefetch           PrefetchConfig `mapstructure:"prefetch"`
-	PTY                PTYConfig      `mapstructure:"pty"`
-	Log                LogConfig      `mapstructure:"log"`
 	RequestTimeout     time.Duration  `mapstructure:"request_timeout"`
 	OfflineReadOnlyTTL time.Duration  `mapstructure:"offline_readonly_ttl"`
 }
@@ -226,32 +172,10 @@ func (c *DaemonConfig) Validate() error {
 	if strings.TrimSpace(c.Server.Address) == "" {
 		return ErrEmptyServerAddress
 	}
-	if c.RateLimit.ReadBytesPerSec < 0 {
-		return ErrNegativeReadRate
-	}
-	if c.RateLimit.WriteBytesPerSec < 0 {
-		return ErrNegativeWriteRate
-	}
 	if c.SelfWriteTTL <= 0 {
 		c.SelfWriteTTL = DefaultSelfWriteTTL
 	}
-	if c.PTY.FrameMaxBytes <= 0 {
-		return ErrPTYFrameMaxBytesNegative
-	}
-	if err := c.validateStartup(); err != nil {
-		return err
-	}
 	return c.validateAudit()
-}
-
-func (c *DaemonConfig) validateStartup() error {
-	if c.Startup.MaxRetries < 0 {
-		return ErrStartupRetriesNegative
-	}
-	if c.Startup.RetryDelay < 0 {
-		return ErrStartupDelayNegative
-	}
-	return nil
 }
 
 func (c *DaemonConfig) validateAudit() error {
@@ -301,22 +225,6 @@ func (c *ServerConfig) Validate() error {
 	if c.RequestTimeout <= 0 {
 		c.RequestTimeout = DefaultRequestTimeout
 	}
-	if err := c.validatePTY(); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (c *ServerConfig) validatePTY() error {
-	if !isAbsolutePTYWorkspaceRoot(c.PTY.WorkspaceRoot) {
-		return ErrPTYWorkspaceRootNotAbs
-	}
-	if c.PTY.FrameMaxBytes <= 0 {
-		return ErrPTYFrameMaxBytesNegative
-	}
-	if hasNegativePTYRateLimit(c.PTY.RateLimit) {
-		return ErrPTYRateLimitNegative
-	}
 	return nil
 }
 
@@ -340,16 +248,9 @@ func loadYAML(path string, out any) error {
 func defaultDaemonConfig() DaemonConfig {
 	return DaemonConfig{
 		SelfWriteTTL: DefaultSelfWriteTTL,
-		PTY: DaemonPTYConfig{
-			FrameMaxBytes: DefaultPTYFrameMaxBytes,
-		},
 		Audit: AuditConfig{
 			Table:     DefaultAuditTable,
 			QueueSize: DefaultAuditQueueSize,
-		},
-		Startup: StartupConfig{
-			MaxRetries: DefaultStartupMaxRetries,
-			RetryDelay: DefaultStartupRetryDelay,
 		},
 	}
 }
@@ -363,28 +264,5 @@ func defaultServerConfig() ServerConfig {
 			MaxFileBytes:   DefaultPrefetchMaxFileBytes,
 			MaxFilesPerDir: DefaultPrefetchMaxFilesPerDir,
 		},
-		PTY: PTYConfig{
-			WorkspaceRoot:           DefaultPTYWorkspaceRoot,
-			EnvPassthrough:          append([]string(nil), DefaultPTYEnvPassthrough...),
-			FrameMaxBytes:           DefaultPTYFrameMaxBytes,
-			GracefulShutdownTimeout: DefaultPTYGracefulShutdown,
-			RateLimit: PTYRateLimitConfig{
-				AttachQPS:   DefaultPTYAttachQPS,
-				AttachBurst: DefaultPTYAttachBurst,
-				StdinBPS:    DefaultPTYStdinBPS,
-				StdinBurst:  DefaultPTYStdinBurst,
-			},
-		},
 	}
-}
-
-func isAbsolutePTYWorkspaceRoot(workspaceRoot string) bool {
-	return filepath.IsAbs(workspaceRoot) || path.IsAbs(workspaceRoot)
-}
-
-func hasNegativePTYRateLimit(rateLimit PTYRateLimitConfig) bool {
-	return rateLimit.AttachQPS < 0 ||
-		rateLimit.AttachBurst < 0 ||
-		rateLimit.StdinBPS < 0 ||
-		rateLimit.StdinBurst < 0
 }

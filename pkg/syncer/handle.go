@@ -9,7 +9,6 @@ import (
 	"syscall"
 
 	remotefsv1 "flyingEirc/Rclaude/api/proto/remotefs/v1"
-	"flyingEirc/Rclaude/pkg/ratelimit"
 	"flyingEirc/Rclaude/pkg/safepath"
 )
 
@@ -19,8 +18,6 @@ type HandleOptions struct {
 	Locker          *pathLocker
 	SelfWrites      *selfWriteFilter
 	SensitiveFilter *SensitiveFilter
-	ReadLimiter     *ratelimit.ByteLimiter
-	WriteLimiter    *ratelimit.ByteLimiter
 	// Auditor, when non-nil, receives one audit record per handled request.
 	Auditor Auditor
 }
@@ -102,9 +99,6 @@ func handleRead(ctx context.Context, reqID string, r *remotefsv1.ReadFileReq, op
 	sliced := sliceContent(data, r.GetOffset(), r.GetLength())
 	if opts.MaxReadSize > 0 && int64(len(sliced)) > opts.MaxReadSize {
 		sliced = sliced[:opts.MaxReadSize]
-	}
-	if err := opts.ReadLimiter.WaitBytes(ctx, len(sliced)); err != nil {
-		return errResponse(reqID, formatErr("read", r.GetPath(), err))
 	}
 
 	return &remotefsv1.FileResponse{

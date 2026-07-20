@@ -11,7 +11,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	remotefsv1 "flyingEirc/Rclaude/api/proto/remotefs/v1"
-	"flyingEirc/Rclaude/pkg/ratelimit"
 )
 
 func newWriteOpts(t *testing.T) (HandleOptions, writeDeps, string) {
@@ -121,65 +120,6 @@ func TestHandleMkdirDeleteRenameTruncate(t *testing.T) {
 
 	_, err = os.Stat(filepath.Join(root, "dir", "renamed.txt"))
 	assert.ErrorIs(t, err, os.ErrNotExist)
-}
-
-func TestHandleWrite_RespectsRateLimit(t *testing.T) {
-	t.Parallel()
-
-	opts, deps, root := newWriteOpts(t)
-	opts.WriteLimiter = ratelimit.NewBytesPerSecond(1000)
-
-	start := time.Now()
-	resp := handleWrite(context.Background(), "w1", &remotefsv1.WriteFileReq{
-		Path:    "a.txt",
-		Content: make([]byte, 1500),
-	}, opts, deps)
-	elapsed := time.Since(start)
-
-	require.True(t, resp.GetSuccess(), resp.GetError())
-	assert.GreaterOrEqual(t, elapsed, 400*time.Millisecond)
-
-	_, err := os.Stat(filepath.Join(root, "a.txt"))
-	require.NoError(t, err)
-}
-
-func TestHandleWrite_CanceledWhileRateLimited(t *testing.T) {
-	t.Parallel()
-
-	opts, deps, root := newWriteOpts(t)
-	opts.WriteLimiter = ratelimit.NewBytesPerSecond(1)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	resp := handleWrite(ctx, "w1", &remotefsv1.WriteFileReq{
-		Path:    "a.txt",
-		Content: []byte("ab"),
-	}, opts, deps)
-	assert.False(t, resp.GetSuccess())
-	assert.Contains(t, resp.GetError(), "context canceled")
-
-	_, err := os.Stat(filepath.Join(root, "a.txt"))
-	assert.ErrorIs(t, err, os.ErrNotExist)
-}
-
-func TestHandleWrite_CreateEmptyContentSkipsRateLimit(t *testing.T) {
-	t.Parallel()
-
-	opts, deps, root := newWriteOpts(t)
-	opts.WriteLimiter = ratelimit.NewBytesPerSecond(1)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	resp := handleWrite(ctx, "w1", &remotefsv1.WriteFileReq{
-		Path: "a.txt",
-		Mode: 0o644,
-	}, opts, deps)
-	require.True(t, resp.GetSuccess(), resp.GetError())
-
-	_, err := os.Stat(filepath.Join(root, "a.txt"))
-	require.NoError(t, err)
 }
 
 func TestHandleRename_UnsafePath(t *testing.T) {

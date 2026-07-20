@@ -12,7 +12,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	remotefsv1 "flyingEirc/Rclaude/api/proto/remotefs/v1"
-	"flyingEirc/Rclaude/pkg/ratelimit"
 )
 
 func callHandle(req *remotefsv1.FileRequest, opts HandleOptions) *remotefsv1.FileResponse {
@@ -99,48 +98,6 @@ func TestHandle_Read_MaxSizeCap(t *testing.T) {
 	}, HandleOptions{Root: root, MaxReadSize: 4})
 	require.True(t, resp.GetSuccess(), resp.GetError())
 	assert.Equal(t, []byte("0123"), resp.GetContent())
-}
-
-func TestHandle_Read_RespectsRateLimit(t *testing.T) {
-	t.Parallel()
-
-	root := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(root, "f.txt"), make([]byte, 1500), 0o600))
-
-	start := time.Now()
-	resp := Handle(context.Background(), &remotefsv1.FileRequest{
-		Operation: &remotefsv1.FileRequest_Read{
-			Read: &remotefsv1.ReadFileReq{Path: "f.txt"},
-		},
-	}, HandleOptions{
-		Root:        root,
-		ReadLimiter: ratelimit.NewBytesPerSecond(1000),
-	})
-	elapsed := time.Since(start)
-
-	require.True(t, resp.GetSuccess(), resp.GetError())
-	assert.GreaterOrEqual(t, elapsed, 400*time.Millisecond)
-}
-
-func TestHandle_Read_CanceledWhileRateLimited(t *testing.T) {
-	t.Parallel()
-
-	root := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(root, "f.txt"), []byte("ab"), 0o600))
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	resp := Handle(ctx, &remotefsv1.FileRequest{
-		Operation: &remotefsv1.FileRequest_Read{
-			Read: &remotefsv1.ReadFileReq{Path: "f.txt"},
-		},
-	}, HandleOptions{
-		Root:        root,
-		ReadLimiter: ratelimit.NewBytesPerSecond(1),
-	})
-	assert.False(t, resp.GetSuccess())
-	assert.Contains(t, resp.GetError(), "context canceled")
 }
 
 func TestHandle_Read_PathEscape(t *testing.T) {
@@ -372,8 +329,7 @@ func TestHandle_NonByteOpsIgnoreCanceledContext(t *testing.T) {
 			Stat: &remotefsv1.StatReq{Path: "f.txt"},
 		},
 	}, HandleOptions{
-		Root:        root,
-		ReadLimiter: ratelimit.NewBytesPerSecond(1),
+		Root: root,
 	})
 	require.True(t, statResp.GetSuccess(), statResp.GetError())
 
@@ -382,10 +338,9 @@ func TestHandle_NonByteOpsIgnoreCanceledContext(t *testing.T) {
 			Truncate: &remotefsv1.TruncateReq{Path: "f.txt", Size: 2},
 		},
 	}, HandleOptions{
-		Root:         root,
-		Locker:       newPathLocker(),
-		SelfWrites:   newSelfWriteFilter(time.Second),
-		WriteLimiter: ratelimit.NewBytesPerSecond(1),
+		Root:       root,
+		Locker:     newPathLocker(),
+		SelfWrites: newSelfWriteFilter(time.Second),
 	})
 	require.True(t, truncateResp.GetSuccess(), truncateResp.GetError())
 }

@@ -1,44 +1,16 @@
-# Daemon-machine config. 唯一入口 `rclaude`（app/rclaude）读取本文件，同时拉起
-# daemon 与远端 agent PTY attach：
-#   rclaude -g <agent> -c <本文件路径>
-# 要运行的 agent 程序（claude / codex / ...）不写在配置里，由 -g/--agent 在
-# 启动命令行声明：裸名走服务端 PATH 解析，或给服务端上的绝对路径。
+# 唯一入口 rclaude 读取本文件：rclaude -g <agent> -c <本文件>
+# 要跑哪个 agent 由 -g/--agent 声明，不写在配置里。
+# 已写死、不再可配置：日志(全等级+JSON)、启动重试(3 次/5s)、PTY 帧上限(65536)。
 server:
-  address: "SERVER_IP:9326"
-  token: "tok-demo"
-  # Optional TLS to a Caddy (or other) TLS terminator in front of the server.
-  # Omit or set enabled=false to keep plaintext gRPC (default, unchanged).
-  # See docs/design/caddy-tls-termination.md and deploy/tls/.
+  address: "SERVER_IP:9326" # ip/domain:port
+  token: "tok-demo" # access token
+  # 可选 TLS（前置 Caddy 等终止器）见 docs/design/caddy-tls-termination.md：
   # tls:
   #   enabled: true
-  #   # address above should then be the TLS endpoint, e.g. "rclaude.example.com:443".
-  #   server_name: ""          # SNI/cert name; defaults to address host. Set it
-  #                            # explicitly when address is a raw IP but the cert
-  #                            # is issued for a domain.
-  #   ca_file: ""              # PEM root CA for Caddy's internal CA / self-signed.
-  #                            # Leave empty for publicly-trusted certs (system roots).
-  #   insecure_skip_verify: false  # diagnostics only; never in production.
-# 工作区根目录不再写在配置里：请在你的项目根目录下启动 rclaude，
-# 启动目录即工作区根；其目录名成为服务端 /workspace/<user_id>/<项目名>/ 中的项目名
-# （目录名必须是单段安全路径：不含 / \ 与控制字符）。
-workspace:
+  #   server_name: ""   # 直连 IP 但证书签给域名时必填
+  #   ca_file: ""       # 自签/内部 CA 的 PEM；公网可信证书留空
+workspace:  # 过滤目录/文件
   exclude:
     - ".git"
     - "node_modules"
     - "vendor"
-log:
-  level: "info"
-  format: "json"          # json（默认）| text
-  # dir: ""                # 日志目录，省略时用 ~/.rclaude/logs
-  # max_size_mb: 100       # 单文件轮转大小
-  # max_backups: 3         # 保留轮转文件个数
-  # max_age_days: 7        # 轮转文件保留天数
-pty:
-  # Keep this aligned with server.yaml if you lower the server-side frame cap.
-  frame_max_bytes: 65536
-# 统一入口 `rclaude` 的启动协调策略（事件总线驱动的失败重试）。
-# max_retries：初始尝试之外允许的重试次数（默认 3）；
-# retry_delay：收到重试通知后再次尝试前的等待（默认 1s）。
-# startup:
-#   max_retries: 3
-#   retry_delay: 1s

@@ -103,8 +103,9 @@ surfaces the remote exit status.
   reachable, the token maps to the wrong `user_id`, or the `-g` agent does not
   resolve on the server (PATH or absolute path).
 - PTY attaches but the agent misbehaves: check the **server** install of that
-  agent, its login state, `PATH`, and that `HOME`/`SHELL`/`CLAUDE_CONFIG_DIR`
-  are in `pty.env_passthrough`. For a transport-only check, temporarily attach
-  with `-g /bin/sh`.
+  agent, its login state, and `PATH`. `HOME`/`SHELL`/`CLAUDE_CONFIG_DIR` are
+  forwarded automatically — they are part of the fixed built-in env passthrough
+  whitelist (no longer a config field). For a transport-only check, temporarily
+  attach with `-g /bin/sh`.
 - Running from a synced/mounted workspace that drops the executable bit: invoke
   the scripts with `sh` as shown above.

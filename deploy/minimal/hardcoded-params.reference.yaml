@@ -1,0 +1,71 @@
+# ⚠️ 本文件仅供开发参考，不会被任何程序加载。
+#
+# 下列参数曾经可通过 daemon.yaml / server.yaml 配置，现已「写死」在代码中
+# （见 pkg/config/config.go 常量、app/rclaude/main.go、app/server/main.go、
+# app/server/pty_runtime.go）。这里集中记录它们的当前取值，方便后续开发时
+# 一眼看到「哪些行为是固定的、值是多少」，而不必去翻代码。
+#
+# 真正可配置的项请看 daemon.example.yaml / server.example.yaml。
+# 可运行的测试配置是 gitignore 的 daemon.test.yaml / server.test.yaml。
+
+# ────────────────────────────────────────────────────────────────────────
+# 日志（daemon 与 server 相同策略，始终写文件、终端无输出）
+# 常量来源：app/rclaude/main.go、app/server/main.go、pkg/logx
+# ────────────────────────────────────────────────────────────────────────
+log:
+  level: "debug"                 # 写死：全等级落地（debug 及以上都记录）
+  format: "json"                 # 写死：JSON
+  dir: "~/.rclaude/logs"         # logx.DefaultDir()
+  filename: "rclaude.log"        # daemon；server 为 "rclaude-server.log"
+  max_size_mb: 100               # logx.DefaultMaxSizeMB，轮转大小
+  max_backups: 3                 # logx.DefaultMaxBackups，保留文件数
+  max_age_days: 7                # logx.DefaultMaxAgeDays，保留天数
+
+# ────────────────────────────────────────────────────────────────────────
+# 统一入口 rclaude 启动协调（事件总线失败重试）
+# 常量来源：pkg/config/config.go DefaultStartup*，app/rclaude/main.go
+# ────────────────────────────────────────────────────────────────────────
+startup:
+  max_retries: 3                 # 写死：初始尝试外再重试 3 次（总尝试 = 1 + 3）
+  retry_delay: "5s"              # 写死：每次重试前等待 5s
+
+# ────────────────────────────────────────────────────────────────────────
+# 服务端 PTY 会话运行环境
+# 常量来源：pkg/config/config.go DefaultPTY*，app/server/pty_runtime.go
+# 注意：要运行哪个 agent 由客户端 rclaude -g/--agent 声明，不在此处。
+# ────────────────────────────────────────────────────────────────────────
+pty:
+  workspace_root: "<= fuse.mountpoint>"  # 写死：取 FUSE 挂载点，不再单独配置；
+                                         # 实际 cwd = {mountpoint}/{user_id}/{project}
+  frame_max_bytes: 65536         # 写死：单帧 PTY 数据上限 64KiB
+  graceful_shutdown_timeout: "5s" # 写死：会话优雅退出超时
+  env_passthrough:               # 写死：从 server 进程环境透传给 agent 的白名单
+    - "TERM"
+    - "LANG"
+    - "LC_ALL"
+    - "LC_CTYPE"
+    - "PATH"
+    - "HOME"
+    - "SHELL"
+    - "CLAUDE_CONFIG_DIR"
+  ratelimit:                     # 写死：PTY 限速功能保留、值固定（非「文件限速」）
+    attach_qps: 1                # 每用户 attach 速率
+    attach_burst: 3              # attach 突发桶
+    stdin_bps: 1048576           # stdin 字节/秒（1 MiB/s）
+    stdin_burst: 262144          # stdin 突发桶（256 KiB）
+
+# daemon 侧 PTY 客户端帧上限同样写死为 65536（pkg/ptyattach）。
+
+# ────────────────────────────────────────────────────────────────────────
+# 已删除的功能（不再存在，仅作历史提示）
+# ────────────────────────────────────────────────────────────────────────
+# rate_limit:                    # 【已删除】daemon 侧文件字节限速功能整体移除
+#   read_bytes_per_sec: ...      #   （原 syncer.HandleOptions.Read/WriteLimiter）
+#   write_bytes_per_sec: ...
+
+# ────────────────────────────────────────────────────────────────────────
+# 仍可配置、但省略时用默认值的项（列此备查，非写死）
+# ────────────────────────────────────────────────────────────────────────
+# server:  request_timeout: 10s   offline_readonly_ttl: 5m
+#          cache.max_bytes: 0(关) prefetch.enabled: true / max_file_bytes: 102400 / max_files_per_dir: 16
+# daemon:  self_write_ttl: 2s     audit.*（默认关闭；table=file_audit_log, queue_size=256）

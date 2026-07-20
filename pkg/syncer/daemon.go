@@ -15,7 +15,6 @@ import (
 	"flyingEirc/Rclaude/pkg/audit"
 	"flyingEirc/Rclaude/pkg/config"
 	"flyingEirc/Rclaude/pkg/logx"
-	"flyingEirc/Rclaude/pkg/ratelimit"
 	"flyingEirc/Rclaude/pkg/transport"
 )
 
@@ -296,8 +295,6 @@ func serveStream(
 		Locker:          locker,
 		SelfWrites:      selfWrites,
 		SensitiveFilter: deps.sensitiveFilter,
-		ReadLimiter:     ratelimit.NewBytesPerSecond(opts.Config.RateLimit.ReadBytesPerSec),
-		WriteLimiter:    ratelimit.NewBytesPerSecond(opts.Config.RateLimit.WriteBytesPerSec),
 	}
 	if deps.auditor != nil {
 		handleOpts.Auditor = deps.auditor

@@ -1,40 +1,13 @@
+# Server-machine config. 只保留必须由部署者提供的项。
+#
+# 以下均已在代码里写死、不再可配置：
+#   - PTY 运行环境：工作区根 = fuse.mountpoint（同源）、env 白名单、帧上限 65536、
+#     优雅退出 5s、attach/stdin 限速（默认值）；
+#   - 日志：全等级（debug）落地 + JSON 格式，目录 ~/.rclaude/logs、默认轮转；
+#   - 要运行哪个 agent 由客户端 rclaude -g/--agent 声明，随 attach 请求下发。
 listen: ":9326"
 auth:
   tokens:
     "tok-demo": "demo"
 fuse:
   mountpoint: "/workspace"
-pty:
-  # There is no pty.binary here: the agent program each session runs (claude,
-  # codex, ...) is declared by the user when starting rclaude (-g/--agent) and
-  # arrives with the attach request — a bare name resolved via this server's
-  # PATH or an absolute path on this server. The attach lands directly in that
-  # agent and the whole session ends when it exits. There is still no shell
-  # fallback and no client-controlled argv.
-  workspace_root: "/workspace"
-  env_passthrough:
-    - "TERM"
-    - "LANG"
-    - "LC_ALL"
-    - "LC_CTYPE"
-    - "PATH"
-    - "HOME"
-    - "SHELL"
-    - "CLAUDE_CONFIG_DIR"
-    # Optional for Server-side env-based Claude auth/gateway routing:
-    # - "ANTHROPIC_*"
-    # - "CLAUDE_CODE_*"
-  frame_max_bytes: 65536
-  graceful_shutdown_timeout: "5s"
-  ratelimit:
-    attach_qps: 1
-    attach_burst: 3
-    stdin_bps: 1048576
-    stdin_burst: 262144
-log:
-  level: "info"
-  format: "json"          # json（默认）| text
-  # dir: ""                # 日志目录，省略时用 ~/.rclaude/logs
-  # max_size_mb: 100       # 单文件轮转大小
-  # max_backups: 3         # 保留轮转文件个数
-  # max_age_days: 7        # 轮转文件保留天数

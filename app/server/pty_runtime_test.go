@@ -32,19 +32,9 @@ func TestNewPTYServiceBuildsFromServerConfig(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "proj", workspace, "registry must expose the daemon workspace name")
 
+	// PTY 运行环境全部写死，配置只需给出 FUSE 挂载点（PTY 工作区根即取此值）。
 	svc, err := newPTYService(&config.ServerConfig{
-		PTY: config.PTYConfig{
-			WorkspaceRoot:           testWorkspaceRoot(),
-			EnvPassthrough:          []string{"TERM", "PATH"},
-			FrameMaxBytes:           64 * 1024,
-			GracefulShutdownTimeout: time.Second,
-			RateLimit: config.PTYRateLimitConfig{
-				AttachQPS:   1,
-				AttachBurst: 1,
-				StdinBPS:    1024,
-				StdinBurst:  512,
-			},
-		},
+		FUSE: config.FUSEConfig{Mountpoint: testWorkspaceRoot()},
 	}, manager, discardLogger())
 	require.NoError(t, err)
 	require.NotNil(t, svc)

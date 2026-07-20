@@ -373,22 +373,6 @@ workspace:
 		assert.Equal(t, int(config.DefaultPTYFrameMaxBytes), cfg.FrameMax)
 	})
 
-	t.Run("use daemon pty frame max", func(t *testing.T) {
-		path := writeDaemonConfig(t, `
-server:
-  address: "example.com:9326"
-  token: "server-token"
-workspace:
-  path: `+yamlPath(absWorkspace())+`
-pty:
-  frame_max_bytes: 32768
-`)
-
-		cfg, err := loadClientConfigFromDaemon(path)
-		require.NoError(t, err)
-		assert.Equal(t, 32768, cfg.FrameMax)
-	})
-
 	t.Run("reject missing token", func(t *testing.T) {
 		path := writeDaemonConfig(t, `
 server:

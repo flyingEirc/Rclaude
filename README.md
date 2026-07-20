@@ -34,7 +34,6 @@ Implemented features include:
 - small-file prefetch after directory reads
 - temporary read-only fallback from cache after daemon disconnect
 - sensitive-file filtering for `.env`, private keys, certificates, and custom patterns
-- daemon-side read/write byte-rate limiting
 - workspace boundary protection and path traversal defense
 - YAML configuration with `RCLAUDE_*` environment overrides
 - static token authentication mapped to `user_id`
@@ -123,7 +122,7 @@ pkg/ptyclient/          daemon-side terminal <-> PTY gRPC bridge
 pkg/ptyattach/          local terminal attach (raw mode, resize, exit codes)
 pkg/audit/              optional DB audit log for remote file operations
 pkg/transport/          gRPC connection and stream wrappers
-pkg/ratelimit/          daemon-side byte-rate limiting
+pkg/ratelimit/          Server-side PTY attach/stdin rate limiting
 internal/inmemtest/     in-memory end-to-end test harness
 internal/testutil/      shared test fixtures and helpers
 deploy/minimal/         minimal remote/local test closure (configs + start scripts)
@@ -171,12 +170,16 @@ prefetch:
   max_files_per_dir: 16              # Max number of files prefetched per directory read.
 request_timeout: 10s                # Per-request timeout (Lookup/Getattr/Read/Write, etc.); <=0 falls back to the 10s default.
 offline_readonly_ttl: 5m            # How long cached content stays read-only accessible after the daemon disconnects.
-log:
-  level: "info"                      # Log level: debug | info | warn | error
-  format: "text"                     # Log format: json (default) | text
-pty:
-  workspace_root: "/workspace"       # PTY working-directory root, must be absolute; should match fuse.mountpoint. Actual cwd is {workspace_root}/{user_id}/{project}.
 ```
+
+There is no `pty:` block and no `log:` block: PTY and logging behaviour are
+hardcoded. The PTY working-directory root equals `fuse.mountpoint` (actual cwd
+is `{mountpoint}/{user_id}/{project}`), the env passthrough whitelist is the
+fixed default set (`TERM`, `LANG`, `LC_ALL`, `LC_CTYPE`, `PATH`, `HOME`,
+`SHELL`, `CLAUDE_CONFIG_DIR`), the PTY frame max is 65536 bytes, graceful stop
+is 5s, and attach/stdin rate limiting uses fixed defaults. Logging is always
+written at all levels (debug and up) as JSON to `~/.rclaude/logs` with default
+rotation. Startup retry is fixed at 3 attempts, 5s apart.
 
 There is no `pty.binary`: the agent program each session runs is declared by
 the user on the rclaude command line (`-g/--agent`) and arrives with the
@@ -195,13 +198,7 @@ workspace:
     - "vendor"
   sensitive_patterns:                 # Extra sensitive-path patterns on top of the built-in rules (.env, private keys, certs, etc.).
     - "secrets/**"
-rate_limit:
-  read_bytes_per_sec: 0               # Byte-rate cap on content the daemon returns for reads; <=0 means unlimited.
-  write_bytes_per_sec: 0              # Byte-rate cap on writes the daemon flushes to disk; <=0 means unlimited.
 self_write_ttl: 2s                    # Window during which the daemon ignores its own write-triggered filesystem events, to avoid a feedback loop; <=0 falls back to the 2s default.
-log:
-  level: "info"                       # Log level: debug | info | warn | error
-  format: "text"                      # Log format: json (default) | text
 ```
 
 Note there is no `workspace.path`: the workspace root is the directory you start `rclaude` in, so run it from your project root. That directory's name becomes the project name on the Server (it must be a single safe path segment: no `/`, `\`, or control characters, and not `.`/`..`).
@@ -255,22 +252,12 @@ rclaude -g /root/.local/bin/codex -c ./daemon.yaml    # absolute path on the Ser
 
 The Server launches exactly that agent program inside `/workspace/{user_id}/{project}` and the session ends when it exits. There is no shell fallback and no client-controlled argv, so the session cannot `ls`/`cd` on the Server, see the remote workspace path, or leave the agent UI. The process runs on the Server machine, not on the daemon machine, so the Server OS user must be able to resolve the binary (via `PATH` for bare names, or the given absolute path) and have the login state or environment variables that CLI needs.
 
-Example Server PTY config:
-
-```yaml
-pty:
-  workspace_root: "/workspace"        # PTY working-directory root, must be absolute; should match fuse.mountpoint. Actual cwd is {workspace_root}/{user_id}/{project}.
-  env_passthrough:                    # Whitelist of env vars forwarded from the Server process into the PTY child; this list is also the built-in default.
-    - "TERM"
-    - "LANG"
-    - "LC_ALL"
-    - "LC_CTYPE"
-    - "PATH"
-    - "HOME"
-    - "SHELL"
-    - "CLAUDE_CONFIG_DIR"
-  frame_max_bytes: 65536              # Max bytes per PTY frame, must be > 0; defaults to 65536 (64 KiB).
-```
+The Server PTY behaviour is not configurable — it is hardcoded. The working
+directory root equals `fuse.mountpoint` (actual cwd
+`{mountpoint}/{user_id}/{project}`), the env passthrough whitelist is the fixed
+default set (`TERM`, `LANG`, `LC_ALL`, `LC_CTYPE`, `PATH`, `HOME`, `SHELL`,
+`CLAUDE_CONFIG_DIR`), the PTY frame max is 65536 bytes, graceful stop is 5s, and
+attach/stdin rate limiting uses fixed defaults.
 
 The minimal remote/local test closure is [deploy/minimal/README.md](deploy/minimal/README.md). Recommended order:
 
@@ -287,18 +274,9 @@ Current observed status:
 
 Logs never go to the terminal. Because the unified `rclaude` entry hands the
 terminal to the remote PTY, all diagnostics are written to a rotating log file
-instead, so terminal output stays a clean passthrough. The `log` block controls
-this on both sides:
-
-```yaml
-log:
-  level: "info"         # Log level: debug | info | warn | error
-  format: "json"        # json (default) | text
-  # dir: ""             # log directory; defaults to ~/.rclaude/logs
-  # max_size_mb: 100    # rotate after this size (MB)
-  # max_backups: 3      # rotated files to keep
-  # max_age_days: 7     # days to keep rotated files
-```
+instead, so terminal output stays a clean passthrough. Logging is not
+configurable: both sides always write all levels (debug and up) as JSON to
+`~/.rclaude/logs` with default rotation.
 
 The unified entry writes `rclaude.log`; the server writes
 `rclaude-server.log`. On the terminal you only see one status line per
@@ -308,13 +286,7 @@ Startup is coordinated, not raced. The daemon and PTY start together, but the
 PTY declares a dependency on the daemon, so its first attach waits until the
 daemon has registered with the Server instead of failing with
 `daemon not connected` and retrying. Residual failures still fall back to
-event-bus retry, tunable in the daemon config:
-
-```yaml
-startup:
-  max_retries: 3        # attempts beyond the first (total = 1 + max_retries)
-  retry_delay: 1s       # wait after a retry notification before retrying
-```
+event-bus retry, with fixed limits (3 retries, 5s apart).
 
 Shutdown is graceful. `SIGINT` (Ctrl-C), `SIGTERM`, and `SIGHUP` (closing the
 whole terminal window) all cancel the run context so in-flight file streams and
